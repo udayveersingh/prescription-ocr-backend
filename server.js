@@ -6,14 +6,33 @@ const rateLimit = require("express-rate-limit");
 const { processImage } = require("./services/ocrService");
 const { analyzePrescription } = require("./services/aiService");
 const { validateImage } = require("./middleware/validateImage");
+const Prescription = require("./models/Prescription");
+const authMiddleware = require("./middleware/authMiddleware");
+require("dotenv").config();
+const connectDB = require("./config/db");
+const authRoutes = require("./routes/authRoutes");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Security middleware
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(cors({ origin: "*", methods: ["GET","POST","OPTIONS"], allowedHeaders: ["Content-Type"] }));
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 app.use(express.json({ limit: "10mb" }));
+
+connectDB();
+
+const UPLOAD_DIR = path.join(__dirname, "uploads");
+
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR);
+}
 
 // Rate limiting - important for free AI APIs
 const limiter = rateLimit({
@@ -37,6 +56,7 @@ const upload = multer({
   },
 });
 
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ── Routes ──────────────────────────────────────────────────
 
 /**
@@ -44,6 +64,9 @@ const upload = multer({
  * Accepts: multipart/form-data with field "image"
  * Returns: structured prescription data
  */
+
+app.use("/api/auth", authRoutes);
+
 app.post(
   "/api/prescription/scan",
   upload.single("image"),
@@ -59,12 +82,39 @@ app.post(
       // Step 2: Send to AI for reading + structuring
       const result = await analyzePrescription(processedImage, mimeType);
 
+       // 🔹 Save to DB
+      const prescription = await Prescription.create({
+
+        user: req.user.id,
+
+        patientInfo: result.patientInfo,
+
+        doctorInfo: result.doctorInfo,
+
+        medications: result.medications,
+
+        diagnosis: result.diagnosis,
+
+        additionalNotes: result.additionalNotes,
+
+        confidence: result.confidence,
+
+        warnings: result.warnings,
+
+        meta: {
+          processingTime: Date.now() - req.startTime,
+          imageSize: req.file.size
+        }
+
+      });
+
       res.json({
         success: true,
         data: result,
         meta: {
           processingTime: Date.now() - req.startTime,
           imageSize: req.file.size,
+           savedId: prescription._id
         },
       });
     } catch (err) {
@@ -77,25 +127,80 @@ app.post(
   }
 );
 
+app.get("/api/prescription/history", authMiddleware, async (req, res) => {
+
+  try {
+
+    const prescriptions = await Prescription
+      .find({ user: req.user.id })
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: prescriptions
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: "Failed to fetch history"
+    });
+
+  }
+
+});
+
 /**
  * POST /api/prescription/scan-base64
  * Accepts: JSON { image: "base64string", mimeType: "image/jpeg" }
  * Useful for React Native when sending base64 directly
  */
-app.post("/api/prescription/scan-base64", async (req, res) => {
+app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
     const { image, mimeType = "image/jpeg" } = req.body;
     if (!image) return res.status(400).json({ error: "Image is required" });
 
     const imageBuffer = Buffer.from(image, "base64");
+
+    // create user folder
+    const userFolder = path.join(UPLOAD_DIR, req.user.id.toString());
+
+    if (!fs.existsSync(userFolder)) {
+      fs.mkdirSync(userFolder, { recursive: true });
+    }
+
+    // create file name
+    const fileName = `scan_${Date.now()}.jpg`;
+    const filePath = path.join(userFolder, fileName);
+
+    // save file
+    fs.writeFileSync(filePath, imageBuffer);
+
     const processedImage = await processImage(imageBuffer);
     const result = await analyzePrescription(processedImage, mimeType);
+
+    // 🔹 Save to DB
+    const prescription = await Prescription.create({
+      user: req.user.id,
+      imagePath: `/uploads/${req.user.id}/${fileName}`,   
+      patientInfo: result.patientInfo,
+      doctorInfo: result.doctorInfo,
+      medications: result.medications,
+      diagnosis: result.diagnosis,
+      additionalNotes: result.additionalNotes,
+      confidence: result.confidence,
+      warnings: result.warnings,
+      meta: {
+        processingTime: Date.now() - req.startTime,
+      }
+    });
 
     res.json({
       success: true,
       data: result,
       meta: { processingTime: Date.now() - req.startTime },
+      savedId: prescription._id
     });
   } catch (err) {
     console.error("Base64 scan error:", err);
