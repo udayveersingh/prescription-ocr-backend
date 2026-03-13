@@ -10,9 +10,20 @@ require("dotenv").config();
 const AI_PROVIDER = process.env.AI_PROVIDER || "groq";
 
 // ── Prompt ───────────────────────────────────────────────────
-const PRESCRIPTION_PROMPT = `You are a medical prescription reader. Analyze this image of a handwritten or printed prescription and extract all information.
+// ── Step 1: Detect document type ────────────────────────────
+const DETECT_PROMPT = `Look at this medical document image and identify what type it is.
 
-Return ONLY a valid JSON object (no markdown, no explanation, no backticks) with this exact structure:
+Return ONLY a valid JSON object (no markdown, no backticks):
+{
+  "type": "prescription" | "lab_test" | "radiology" | "unknown",
+  "confidence": "high" | "medium" | "low",
+  "description": "brief one line description of what you see"
+}`;
+
+// ── Step 2a: Prescription prompt (existing) ──────────────────
+const PRESCRIPTION_PROMPT = `You are a medical prescription reader. Analyze this handwritten or printed prescription and extract all information.
+
+Return ONLY a valid JSON object (no markdown, no backticks):
 {
   "patientInfo": {
     "name": "string or null",
@@ -42,40 +53,173 @@ Return ONLY a valid JSON object (no markdown, no explanation, no backticks) with
   "additionalNotes": "any other instructions or null",
   "confidence": "high | medium | low",
   "warnings": ["list any unclear or potentially misread items"]
+}`;
+
+// ── Step 2b: Lab Test prompt ─────────────────────────────────
+const LAB_TEST_PROMPT = `You are a medical lab report reader. Analyze this laboratory test report and extract all test results.
+
+Return ONLY a valid JSON object (no markdown, no backticks):
+{
+  "documentType": "lab_test",
+  "patientInfo": {
+    "name": "string or null",
+    "age": "string or null",
+    "gender": "string or null",
+    "sampleDate": "string or null",
+    "reportDate": "string or null",
+    "patientId": "string or null"
+  },
+  "labInfo": {
+    "labName": "string or null",
+    "labAddress": "string or null",
+    "contact": "string or null",
+    "referredBy": "doctor name who referred or null",
+    "reportId": "string or null"
+  },
+  "tests": [
+    {
+      "testName": "e.g. Hemoglobin",
+      "category": "e.g. Complete Blood Count",
+      "value": "actual result value e.g. 13.5",
+      "unit": "e.g. g/dL",
+      "referenceRange": "e.g. 12.0 - 17.0",
+      "status": "normal | high | low | critical",
+      "interpretation": "brief note if abnormal or null"
+    }
+  ],
+  "summary": "overall summary of results or null",
+  "criticalValues": ["list any critical/panic values found"],
+  "additionalNotes": "string or null",
+  "confidence": "high | medium | low",
+  "warnings": ["list unclear or misread items"]
 }
 
-Be thorough. If handwriting is unclear, include your best guess with a warning. Never hallucinate medication names.`;
+For status field:
+- normal: value within reference range
+- high: value above reference range  
+- low: value below reference range
+- critical: dangerously abnormal value needing immediate attention`;
+
+// ── Step 2c: Radiology prompt ────────────────────────────────
+const RADIOLOGY_PROMPT = `You are a medical radiology report reader. Analyze this radiology/imaging report.
+
+Return ONLY a valid JSON object (no markdown, no backticks):
+{
+  "documentType": "radiology",
+  "patientInfo": {
+    "name": "string or null",
+    "age": "string or null",
+    "gender": "string or null",
+    "date": "string or null"
+  },
+  "studyInfo": {
+    "studyType": "e.g. X-Ray, MRI, CT Scan, Ultrasound",
+    "bodyPart": "e.g. Chest, Abdomen, Brain",
+    "referredBy": "string or null",
+    "radiologist": "string or null",
+    "center": "string or null"
+  },
+  "findings": "detailed findings text or null",
+  "impression": "radiologist impression/conclusion or null",
+  "recommendations": "string or null",
+  "confidence": "high | medium | low",
+  "warnings": ["list unclear items"]
+}`;
+
+// In aiService.js replace DETECT_PROMPT approach with this:
+const SMART_PROMPT = `You are a medical document reader. First identify what type of document this is, then extract all information accordingly.
+
+The document could be:
+1. A PRESCRIPTION (doctor's handwritten or printed medication orders)
+2. A LAB TEST REPORT (blood tests, urine tests, pathology results with values and reference ranges)
+3. A RADIOLOGY REPORT (X-ray, MRI, CT scan, ultrasound findings)
+
+Return ONLY a valid JSON object (no markdown, no backticks).
+
+If it is a PRESCRIPTION return:
+{
+  "documentType": "prescription",
+  "patientInfo": {
+    "name": "string or null",
+    "age": "string or null",
+    "gender": "string or null",
+    "date": "string or null"
+  },
+  "doctorInfo": {
+    "name": "string or null",
+    "specialization": "string or null",
+    "licenseNumber": "string or null",
+    "clinic": "string or null",
+    "contact": "string or null"
+  },
+  "medications": [
+    {
+      "name": "medication name",
+      "genericName": "generic/chemical name if visible or null",
+      "dosage": "e.g. 500mg",
+      "frequency": "e.g. twice daily / BID",
+      "duration": "e.g. 7 days",
+      "instructions": "e.g. take after food",
+      "quantity": "e.g. 14 tablets or null"
+    }
+  ],
+  "diagnosis": "string or null",
+  "additionalNotes": "any other instructions or null",
+  "confidence": "high | medium | low",
+  "warnings": ["list any unclear or potentially misread items"]
+}
+Be thorough. If handwriting is unclear, include your best guess with a warning. Never hallucinate medication names
+
+If it is a LAB TEST REPORT return:
+{
+  "documentType": "lab_test",
+  "patientInfo": { "name": null, "age": null, "gender": null, "sampleDate": null, "reportDate": null, "patientId": null },
+  "labInfo": { "labName": null, "labAddress": null, "contact": null, "referredBy": null, "reportId": null },
+  "tests": [{ "testName": "", "category": "", "value": "", "unit": "", "referenceRange": "", "status": "normal | high | low | critical", "interpretation": null }],
+  "summary": null,
+  "criticalValues": [],
+  "additionalNotes": null,
+  "confidence": "high | medium | low",
+  "warnings": []
+}
+
+If it is a RADIOLOGY REPORT return:
+{
+  "documentType": "radiology",
+  "patientInfo": { "name": null, "age": null, "gender": null, "date": null },
+  "studyInfo": { "studyType": null, "bodyPart": null, "referredBy": null, "radiologist": null, "center": null },
+  "findings": null,
+  "impression": null,
+  "recommendations": null,
+  "confidence": "high | medium | low",
+  "warnings": []
+}
+
+If unknown return:
+{
+  "documentType": "unknown",
+  "confidence": "low",
+  "warnings": ["Could not identify document type"]
+}`;
 
 // ── GROQ (FREE - No credit card needed) ─────────────────────
-async function analyzeWithGroq(imageBuffer, mimeType) {
+async function analyzeWithGroq(imageBuffer, mimeType, prompt = PRESCRIPTION_PROMPT) {
   const Groq = require("groq-sdk");
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
   const base64 = imageBuffer.toString("base64");
 
   const response = await groq.chat.completions.create({
     model: "meta-llama/llama-4-scout-17b-16e-instruct",
-    max_tokens: 1500,
+    max_tokens: 2000,
     temperature: 0.1,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-            },
-          },
-          {
-            type: "text",
-            text: PRESCRIPTION_PROMPT,
-          },
-        ],
-      },
-    ],
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+        { type: "text", text: prompt },
+      ],
+    }],
   });
-
   return parseAIResponse(response.choices[0].message.content);
 }
 
@@ -185,4 +329,33 @@ async function analyzePrescription(imageBuffer, mimeType) {
   }
 }
 
-module.exports = { analyzePrescription };
+async function analyzeDocument(imageBuffer, mimeType) {
+  // Single call — detects AND extracts in one shot
+  console.log(`Using AI provider: ${AI_PROVIDER}`);
+  const result = await analyzeWithPrompt(imageBuffer, mimeType, SMART_PROMPT);
+  console.log(`📄 Document type: ${result.documentType}`);
+  return result;
+}
+
+// ── Detect document type ─────────────────────────────────────
+async function detectDocumentType(imageBuffer, mimeType) {
+  try {
+    const result = await analyzeWithPrompt(imageBuffer, mimeType, DETECT_PROMPT);
+    return result;
+  } catch {
+    return { type: "prescription", confidence: "low" }; // fallback
+  }
+}
+
+// ── Generic analyzer with any prompt ────────────────────────
+async function analyzeWithPrompt(imageBuffer, mimeType, prompt) {
+  switch (AI_PROVIDER) {
+    case "openai":  return analyzeWithOpenAI(imageBuffer, mimeType, prompt);
+    case "claude":  return analyzeWithClaude(imageBuffer, mimeType, prompt);
+    case "gemini":  return analyzeWithGemini(imageBuffer, mimeType, prompt);
+    case "groq":
+    default:        return analyzeWithGroq(imageBuffer, mimeType, prompt);
+  }
+}
+
+module.exports = { analyzePrescription: analyzeDocument };
