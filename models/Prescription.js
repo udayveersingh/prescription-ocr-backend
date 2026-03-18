@@ -34,7 +34,11 @@ const prescriptionSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-
+    familyMember: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "FamilyMember",
+      default: null,
+    },
     // ── Document type ──────────────────────────────────────
     documentType: {
       type: String,
@@ -108,6 +112,7 @@ const prescriptionSchema = new mongoose.Schema(
 // ── Indexes for faster queries ───────────────────────────────
 prescriptionSchema.index({ user: 1, createdAt: -1 });       // user history
 prescriptionSchema.index({ user: 1, documentType: 1 });     // filter by type
+prescriptionSchema.index({ user: 1, familyMember: 1 }); // filter by family member
 prescriptionSchema.index({ "tests.status": 1 });            // find critical results
 
 module.exports = mongoose.model("Prescription", prescriptionSchema);

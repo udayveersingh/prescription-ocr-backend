@@ -11,6 +11,7 @@ const authMiddleware = require("./middleware/authMiddleware");
 require("dotenv").config();
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
+const familyRoutes = require("./routes/family");
 const fs = require("fs");
 const path = require("path");
 
@@ -21,7 +22,7 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
   origin: "*",
-  methods: ["GET", "POST", "OPTIONS"],
+  methods: ["GET", "POST","PUT", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json({ limit: "10mb" }));
@@ -86,7 +87,7 @@ app.post(
       const prescription = await Prescription.create({
 
         user: req.user.id,
-
+        familyMember: req.body.familyMemberId || null,
         patientInfo: result.patientInfo,
 
         doctorInfo: result.doctorInfo,
@@ -130,9 +131,18 @@ app.post(
 app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
   try {
+    const query = { user: req.user.id };
+
+    if (req.query.familyMemberId) {
+      query.familyMember = req.query.familyMemberId;
+    }
+
+    // const prescriptions = await Prescription
+    //   .find({ user: req.user.id })
+    //   .sort({ createdAt: -1 });
 
     const prescriptions = await Prescription
-      .find({ user: req.user.id })
+      .find(query)
       .sort({ createdAt: -1 });
 
     res.json({
@@ -149,6 +159,22 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
   }
 
 });
+
+// In server.js — add this route
+app.put("/api/prescription/assign-family", authMiddleware, async (req, res) => {
+  try {
+    const { savedIds, familyMemberId } = req.body;
+    await Prescription.updateMany(
+      { _id: { $in: savedIds }, user: req.user.id },
+      { familyMember: familyMemberId || null }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.use("/api/family", familyRoutes);
 
 /**
  * POST /api/prescription/scan-base64

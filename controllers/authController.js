@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const FamilyMember = require("../models/FamilyMember");
 
 exports.register = async (req, res) => {
   try {
@@ -26,6 +27,12 @@ exports.register = async (req, res) => {
     });
 
     await user.save();
+
+    await FamilyMember.create({
+      user: user._id,
+      name: user.name,
+      relation: "Self",
+    });
 
     res.json({
       success: true,
@@ -78,5 +85,35 @@ exports.login = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Login failed" });
+  }
+};
+
+exports.google = async (req, res) => {
+  try {
+    const { googleId, email, name } = req.body;
+    if (!googleId || !email) 
+      return res.status(400).json({ error: "googleId and email required" });
+
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      user = await User.create({
+        name,
+        email,
+        password: `google_${googleId}`,
+        googleId,
+      });
+      await FamilyMember.create({
+        user: user._id,
+        name,
+        relation: "Self",
+      });
+    }
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+    res.json({ success: true, token, user: { name: user.name, email: user.email } });
+  } catch (err) {
+    console.error("Google auth error:", err);
+    res.status(401).json({ success: false, error: "Invalid Google token" });
   }
 };
