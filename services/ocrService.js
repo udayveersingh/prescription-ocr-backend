@@ -9,7 +9,7 @@
 const sharp = require("sharp");
 const vision = require("@google-cloud/vision");
 // const client = new vision.ImageAnnotatorClient();
-const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
 const client = new vision.ImageAnnotatorClient({
   credentials: {
