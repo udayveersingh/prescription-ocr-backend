@@ -3,7 +3,7 @@ const multer = require("multer");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const { processImage, extractTextFromImage } = require("./services/ocrService");
+const { processImage } = require("./services/ocrService");
 const { analyzePrescription } = require("./services/aiService");
 const { validateImage } = require("./middleware/validateImage");
 const Prescription = require("./models/Prescription");
@@ -38,7 +38,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 // Rate limiting - important for free AI APIs
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 60,
+  max: 20,
   message: { error: "Too many requests, please try again later." },
 });
 app.use("/api/", limiter);
@@ -131,18 +131,9 @@ app.post(
 app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
   try {
-    const query = { user: req.user.id };
-
-    if (req.query.familyMemberId) {
-      query.familyMember = req.query.familyMemberId;
-    }
-
-    // const prescriptions = await Prescription
-    //   .find({ user: req.user.id })
-    //   .sort({ createdAt: -1 });
 
     const prescriptions = await Prescription
-      .find(query)
+      .find({ user: req.user.id })
       .sort({ createdAt: -1 });
 
     res.json({
@@ -301,18 +292,7 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
 
         // Process + analyze
         const processedImage = await processImage(imageBuffer);
-        // console.log("process image ;;;;;;", processedImage);
-
-        // Step 2: OCR (NEW)
-      const { text: ocrText, confidence: ocrConfidence } =
-        await extractTextFromImage(processedImage);
-
-      console.log("🧾 OCR TEXT:", ocrText);
-
-      // return res.send(ocrText);
-
-        // return;
-        const result = await analyzePrescription(processedImage, mimeType,  ocrText);
+        const result = await analyzePrescription(processedImage, mimeType);
 
         console.log("result from prescription ;;;;;", result);
 

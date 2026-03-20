@@ -7,6 +7,8 @@
  */
 
 const sharp = require("sharp");
+const vision = require("@google-cloud/vision");
+const client = new vision.ImageAnnotatorClient();
 
 /**
  * Process and enhance image for better OCR/AI reading
@@ -50,4 +52,27 @@ async function getImageInfo(imageBuffer) {
   return sharp(imageBuffer).metadata();
 }
 
-module.exports = { processImage, getImageInfo };
+/**
+ * Extract text using Google Vision OCR
+ * @param {Buffer} imageBuffer
+ * @returns {Object} { text, confidence }
+ */
+async function extractTextFromImage(imageBuffer) {
+  try {
+    const [result] = await client.documentTextDetection({
+      image: { content: imageBuffer },
+    });
+
+    const text = result.fullTextAnnotation?.text || "";
+
+    const confidence =
+      result.fullTextAnnotation?.pages?.[0]?.confidence || null;
+
+    return { text, confidence };
+  } catch (err) {
+    console.error("OCR Error:", err.message);
+    return { text: "", confidence: null };
+  }
+}
+
+module.exports = { processImage, getImageInfo, extractTextFromImage };

@@ -127,16 +127,116 @@ Return ONLY a valid JSON object (no markdown, no backticks):
 }`;
 
 // In aiService.js replace DETECT_PROMPT approach with this:
-const SMART_PROMPT = `You are a medical document reader. First identify what type of document this is, then extract all information accordingly.
+// const SMART_PROMPT = `You are a medical document reader. First identify what type of document this is, then extract all information accordingly.
 
-The document could be:
-1. A PRESCRIPTION (doctor's handwritten or printed medication orders)
-2. A LAB TEST REPORT (blood tests, urine tests, pathology results with values and reference ranges)
-3. A RADIOLOGY REPORT (X-ray, MRI, CT scan, ultrasound findings)
+// The document could be:
+// 1. A PRESCRIPTION (doctor's handwritten or printed medication orders)
+// 2. A LAB TEST REPORT (blood tests, urine tests, pathology results with values and reference ranges)
+// 3. A RADIOLOGY REPORT (X-ray, MRI, CT scan, ultrasound findings)
 
-Return ONLY a valid JSON object (no markdown, no backticks).
+// Return ONLY a valid JSON object (no markdown, no backticks).
+
+// If it is a PRESCRIPTION return:
+// {
+//   "documentType": "prescription",
+//   "patientInfo": {
+//     "name": "string or null",
+//     "age": "string or null",
+//     "gender": "string or null",
+//     "date": "string or null"
+//   },
+//   "doctorInfo": {
+//     "name": "string or null",
+//     "specialization": "string or null",
+//     "licenseNumber": "string or null",
+//     "clinic": "string or null",
+//     "contact": "string or null"
+//   },
+//   "medications": [
+//     {
+//       "name": "medication name",
+//       "genericName": "generic/chemical name if visible or null",
+//       "dosage": "e.g. 500mg",
+//       "frequency": "e.g. twice daily / BID",
+//       "duration": "e.g. 7 days",
+//       "instructions": "e.g. take after food",
+//       "quantity": "e.g. 14 tablets or null"
+//     }
+//   ],
+//   "diagnosis": "string or null",
+//   "additionalNotes": "any other instructions or null",
+//   "confidence": "high | medium | low",
+//   "warnings": ["list any unclear or potentially misread items"]
+// }
+// Be thorough. If handwriting is unclear, include your best guess with a warning. Never hallucinate medication names
+
+// If it is a LAB TEST REPORT return:
+// {
+//   "documentType": "lab_test",
+//   "patientInfo": { "name": null, "age": null, "gender": null, "sampleDate": null, "reportDate": null, "patientId": null },
+//   "labInfo": { "labName": null, "labAddress": null, "contact": null, "referredBy": null, "reportId": null },
+//   "tests": [{ "testName": "", "category": "", "value": "", "unit": "", "referenceRange": "", "status": "normal | high | low | critical", "interpretation": null }],
+//   "summary": null,
+//   "criticalValues": [],
+//   "additionalNotes": null,
+//   "confidence": "high | medium | low",
+//   "warnings": []
+// }
+
+// If it is a RADIOLOGY REPORT return:
+// {
+//   "documentType": "radiology",
+//   "patientInfo": { "name": null, "age": null, "gender": null, "date": null },
+//   "studyInfo": { "studyType": null, "bodyPart": null, "referredBy": null, "radiologist": null, "center": null },
+//   "findings": null,
+//   "impression": null,
+//   "recommendations": null,
+//   "confidence": "high | medium | low",
+//   "warnings": []
+// }
+
+// If unknown return:
+// {
+//   "documentType": "unknown",
+//   "confidence": "low",
+//   "warnings": ["Could not identify document type"]
+// }`;
+
+const SMART_PROMPT = `You are an expert medical document reader trained to interpret messy handwritten prescriptions and OCR outputs.
+
+You will receive:
+1. A prescription image
+2. OCR-extracted text (may contain errors, noise, or misspellings)
+
+Your job:
+- Use the IMAGE as the primary source of truth
+- Use OCR text only as supporting context
+- Correct obvious OCR mistakes (especially medicine names, dosages, numbers)
+- Normalize abbreviations (OD, BD, HS, SOS, BBF, etc.)
+- DO NOT hallucinate or invent medicines
+- If unsure, return null and add a warning
+
+Common corrections:
+- "50Omg" → "500mg"
+- "Paracitamol" → "Paracetamol"
+- "Eltrox" → "Eltroxin"
+- "Glycomet Iam" → "Glycomet 1g"
+- "Rosuvas sung" → "Rosuvas 5mg"
+
+Abbreviation meanings:
+- OD = once daily
+- BD = twice daily
+- TDS = three times daily
+- HS = at bedtime
+- BBF = before breakfast
+- SOS = when needed
+
+Return ONLY a valid JSON object (no markdown, no explanation).
+
+----------------------------------------
 
 If it is a PRESCRIPTION return:
+
 {
   "documentType": "prescription",
   "patientInfo": {
@@ -154,21 +254,22 @@ If it is a PRESCRIPTION return:
   },
   "medications": [
     {
-      "name": "medication name",
-      "genericName": "generic/chemical name if visible or null",
-      "dosage": "e.g. 500mg",
-      "frequency": "e.g. twice daily / BID",
-      "duration": "e.g. 7 days",
-      "instructions": "e.g. take after food",
-      "quantity": "e.g. 14 tablets or null"
+      "name": "corrected medication name",
+      "genericName": "if known else null",
+      "dosage": "normalized dosage (e.g. 500mg)",
+      "frequency": "normalized (e.g. once daily)",
+      "duration": "if mentioned else null",
+      "instructions": "clean readable instruction",
+      "quantity": "if mentioned else null"
     }
   ],
-  "diagnosis": "string or null",
-  "additionalNotes": "any other instructions or null",
+  "diagnosis": "cleaned diagnosis or null",
+  "additionalNotes": "cleaned notes or null",
   "confidence": "high | medium | low",
-  "warnings": ["list any unclear or potentially misread items"]
+  "warnings": [
+    "list unclear or guessed items"
+  ]
 }
-Be thorough. If handwriting is unclear, include your best guess with a warning. Never hallucinate medication names
 
 If it is a LAB TEST REPORT return:
 {
@@ -195,11 +296,9 @@ If it is a RADIOLOGY REPORT return:
   "warnings": []
 }
 
-If unknown return:
-{
-  "documentType": "unknown",
-  "confidence": "low",
-  "warnings": ["Could not identify document type"]
+If uncertain:
+- Prefer null instead of guessing
+- Add warnings explaining uncertainty
 }`;
 
 // ── GROQ (FREE - No credit card needed) ─────────────────────
@@ -329,10 +428,20 @@ async function analyzePrescription(imageBuffer, mimeType) {
   }
 }
 
-async function analyzeDocument(imageBuffer, mimeType) {
+async function analyzeDocument(imageBuffer, mimeType, ocrText = "") {
   // Single call — detects AND extracts in one shot
   console.log(`Using AI provider: ${AI_PROVIDER}`);
-  const result = await analyzeWithPrompt(imageBuffer, mimeType, SMART_PROMPT);
+    const enhancedPrompt = `
+${SMART_PROMPT}
+
+-------------------------
+OCR TEXT (may contain errors):
+"""
+${ocrText}
+"""
+`;
+
+  const result = await analyzeWithPrompt(imageBuffer, mimeType, enhancedPrompt);
   console.log(`📄 Document type: ${result.documentType}`);
   return result;
 }
