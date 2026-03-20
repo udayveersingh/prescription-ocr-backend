@@ -35,6 +35,8 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR);
 }
 
+app.set('trust proxy', 1);
+
 // Rate limiting - important for free AI APIs
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
