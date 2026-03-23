@@ -12,9 +12,11 @@ require("dotenv").config();
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const familyRoutes = require("./routes/family");
+const healthqrRoutes = require("./routes/healthqr");
 const fs = require("fs");
 const path = require("path");
 const { parsePatientDateString } = require("./utils/utils");
+const HealthQR = require("./models/HealthQR");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -197,6 +199,7 @@ app.put("/api/prescription/assign-family", authMiddleware, async (req, res) => {
 });
 
 app.use("/api/family", familyRoutes);
+app.use("/api/healthqr", healthqrRoutes);
 
 /**
  * POST /api/prescription/scan-base64
