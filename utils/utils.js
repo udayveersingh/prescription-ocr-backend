@@ -24,4 +24,4 @@ function parsePatientDateString(dateStr, docId) {
   return null;
 }
 
-export {parsePatientDateString};
+module.exports = { parsePatientDateString };
