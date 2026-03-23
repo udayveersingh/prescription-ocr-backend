@@ -14,6 +14,7 @@ const authRoutes = require("./routes/authRoutes");
 const familyRoutes = require("./routes/family");
 const fs = require("fs");
 const path = require("path");
+const { parsePatientDateString } = require("./utils/utils");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -145,7 +146,8 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
     const prescriptions = await Prescription
       .find(query)
-      .sort({ createdAt: -1 });
+      // .sort({ createdAt: -1 });
+      .sort({ patientParsedDate: -1 });
 
     res.json({
       success: true,
@@ -161,6 +163,24 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
   }
 
 });
+
+app.get('/api/update-prescriptions', async(req, res) =>{
+  try {
+    const prescriptions = await Prescription.find({ patientParsedDate: null });
+    for (const doc of prescriptions) {
+      // doc.patientParsedDate = parsePatientDateString(doc.patientInfo?.date);
+      const parsed = parsePatientDateString(doc.patientInfo?.date, doc._id);
+      doc.patientParsedDate = parsed;
+      await doc.save();
+    }
+    console.log(`Migrated ${prescriptions.length} records`);
+
+    return res.json({status: "date updated"});
+  } catch (err) {
+    console.log("error while update prescription ;;;", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+})
 
 // In server.js — add this route
 app.put("/api/prescription/assign-family", authMiddleware, async (req, res) => {
@@ -384,6 +404,7 @@ const savedRecords = await Promise.all(
       confidence:      result.confidence,
       warnings:        result.warnings,
       meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
+      patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
     };
 
     // Add type-specific fields

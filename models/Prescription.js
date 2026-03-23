@@ -105,6 +105,10 @@ const prescriptionSchema = new mongoose.Schema(
       processingTime: Number,
       imageSize:      Number,
     },
+    patientParsedDate: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }  // adds createdAt + updatedAt automatically
 );
