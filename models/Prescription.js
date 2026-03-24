@@ -9,6 +9,9 @@ const medicationSchema = new mongoose.Schema({
   duration:     String,
   instructions: String,
   quantity:     String,
+  caution:      String,
+  form: String,
+  isHighRisk: String,
 });
 
 // ── Lab Test sub-schemas ─────────────────────────────────────
