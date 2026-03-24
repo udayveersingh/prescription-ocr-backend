@@ -100,7 +100,13 @@ const prescriptionSchema = new mongoose.Schema(
     // ── Common fields (all types) ─────────────────────────
     additionalNotes: String,
     confidence:      { type: String, enum: ["high", "medium", "low"] },
-    warnings:        [String],
+    warnings: [String],
+    symptoms: [String],
+    advice: String,
+    followUpDate:{
+      type: Date,
+      default: null,
+    },
     meta: {
       processingTime: Number,
       imageSize:      Number,

@@ -73,65 +73,65 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.use("/api/auth", authRoutes);
 
-app.post(
-  "/api/prescription/scan",
-  upload.single("image"),
-  validateImage,
-  async (req, res) => {
-    try {
-      const imageBuffer = req.file.buffer;
-      const mimeType = req.file.mimetype;
+// app.post(
+//   "/api/prescription/scan",
+//   upload.single("image"),
+//   validateImage,
+//   async (req, res) => {
+//     try {
+//       const imageBuffer = req.file.buffer;
+//       const mimeType = req.file.mimetype;
 
-      // Step 1: Pre-process image (enhance contrast for better OCR)
-      const processedImage = await processImage(imageBuffer);
+//       // Step 1: Pre-process image (enhance contrast for better OCR)
+//       const processedImage = await processImage(imageBuffer);
 
-      // Step 2: Send to AI for reading + structuring
-      const result = await analyzePrescription(processedImage, mimeType);
+//       // Step 2: Send to AI for reading + structuring
+//       const result = await analyzePrescription(processedImage, mimeType);
 
-       // 🔹 Save to DB
-      const prescription = await Prescription.create({
+//        // 🔹 Save to DB
+//       const prescription = await Prescription.create({
 
-        user: req.user.id,
-        familyMember: req.body.familyMemberId || null,
-        patientInfo: result.patientInfo,
+//         user: req.user.id,
+//         familyMember: req.body.familyMemberId || null,
+//         patientInfo: result.patientInfo,
 
-        doctorInfo: result.doctorInfo,
+//         doctorInfo: result.doctorInfo,
 
-        medications: result.medications,
+//         medications: result.medications,
 
-        diagnosis: result.diagnosis,
+//         diagnosis: result.diagnosis,
 
-        additionalNotes: result.additionalNotes,
+//         additionalNotes: result.additionalNotes,
 
-        confidence: result.confidence,
+//         confidence: result.confidence,
 
-        warnings: result.warnings,
+//         warnings: result.warnings,
 
-        meta: {
-          processingTime: Date.now() - req.startTime,
-          imageSize: req.file.size
-        }
+//         meta: {
+//           processingTime: Date.now() - req.startTime,
+//           imageSize: req.file.size
+//         }
 
-      });
+//       });
 
-      res.json({
-        success: true,
-        data: result,
-        meta: {
-          processingTime: Date.now() - req.startTime,
-          imageSize: req.file.size,
-           savedId: prescription._id
-        },
-      });
-    } catch (err) {
-      console.error("Prescription scan error:", err);
-      res.status(500).json({
-        success: false,
-        error: err.message || "Failed to process prescription",
-      });
-    }
-  }
-);
+//       res.json({
+//         success: true,
+//         data: result,
+//         meta: {
+//           processingTime: Date.now() - req.startTime,
+//           imageSize: req.file.size,
+//            savedId: prescription._id
+//         },
+//       });
+//     } catch (err) {
+//       console.error("Prescription scan error:", err);
+//       res.status(500).json({
+//         success: false,
+//         error: err.message || "Failed to process prescription",
+//       });
+//     }
+//   }
+// );
 
 app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
@@ -339,7 +339,7 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         // return;
         const result = await analyzePrescription(processedImage, mimeType,  ocrText);
 
-        console.log("result from prescription ;;;;;", result);
+        // console.log("result from prescription ;;;;;", result);
 
         return {
           result,
@@ -406,6 +406,7 @@ const savedRecords = await Promise.all(
       additionalNotes: result.additionalNotes,
       confidence:      result.confidence,
       warnings:        result.warnings,
+      advice:        result.advice,
       meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
       patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
     };
@@ -415,6 +416,8 @@ const savedRecords = await Promise.all(
       dbData.doctorInfo  = result.doctorInfo;
       dbData.medications = result.medications;
       dbData.diagnosis   = result.diagnosis;
+      dbData.symptoms   = result.symptoms;
+      dbData.followUpDate   = result.followUpDate;
     }
 
     if (result.documentType === "lab_test") {
