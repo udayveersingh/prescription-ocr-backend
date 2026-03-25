@@ -8,16 +8,16 @@
 
 const sharp = require("sharp");
 const vision = require("@google-cloud/vision");
-// const client = new vision.ImageAnnotatorClient();
-const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+const client = new vision.ImageAnnotatorClient();
+// const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
-const client = new vision.ImageAnnotatorClient({
-  credentials: {
-    client_email: credentials.client_email,
-    private_key: credentials.private_key,
-  },
-  projectId: credentials.project_id,
-});
+// const client = new vision.ImageAnnotatorClient({
+//   credentials: {
+//     client_email: credentials.client_email,
+//     private_key: credentials.private_key,
+//   },
+//   projectId: credentials.project_id,
+// });
 
 /**
  * Process and enhance image for better OCR/AI reading

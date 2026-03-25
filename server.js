@@ -294,6 +294,32 @@ function getLowestConfidence(results) {
   };
 }
 
+const VALID_STATUSES = ["normal", "high", "low", "critical"];
+function sanitizeTestStatus(status) {
+  if (!status) return "normal";
+  const s = status.toLowerCase().trim();
+  if (VALID_STATUSES.includes(s)) return s;
+  // Map common AI responses to valid values
+  const map = {
+    "not applicable": "normal",
+    "n/a":            "normal",
+    "na":             "normal",
+    "within range":   "normal",
+    "in range":       "normal",
+    "elevated":       "high",
+    "above normal":   "high",
+    "below normal":   "low",
+    "decreased":      "low",
+    "abnormal":       "high",
+    "borderline":     "high",
+    "positive":       "high",   // for culture/sensitivity tests
+    "negative":       "normal",
+    "reactive":       "high",
+    "non-reactive":   "normal",
+  };
+  return map[s] || "normal"; // fallback to "normal" if unknown
+}
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
@@ -354,43 +380,6 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     // console.log("merge result coming ;;;;;", merged);
     const imagePaths = scanResults.map(s => s.imagePath);
 
-    // Build DB object based on document type
-    // const dbData = {
-    //   user:          req.user.id,
-    //   documentType:  merged.documentType,
-    //   imagePaths,
-    //   imagePath:     imagePaths[0],
-    //   pageCount:     imageList.length,
-    //   patientInfo:   merged.patientInfo,
-    //   additionalNotes: merged.additionalNotes,
-    //   confidence:    merged.confidence,
-    //   warnings:      merged.warnings,
-    //   meta: { processingTime: Date.now() - req.startTime },
-    // };
-
-    // // Add type-specific fields
-    // if (merged.documentType === "prescription") {
-    //   dbData.doctorInfo  = merged.doctorInfo;
-    //   dbData.medications = merged.medications;
-    //   dbData.diagnosis   = merged.diagnosis;
-    // }
-
-    // if (merged.documentType === "lab_test") {
-    //   dbData.labInfo       = merged.labInfo;
-    //   dbData.tests         = merged.tests;
-    //   dbData.summary       = merged.summary;
-    //   dbData.criticalValues = merged.criticalValues;
-    // }
-
-    // if (merged.documentType === "radiology") {
-    //   dbData.studyInfo       = merged.studyInfo;
-    //   dbData.findings        = merged.findings;
-    //   dbData.impression      = merged.impression;
-    //   dbData.recommendations = merged.recommendations;
-    // }
-
-    // const prescription = await Prescription.create(dbData);
-
     // Save one record per page
 const savedRecords = await Promise.all(
   scanResults.map(async (scanResult, index) => {
@@ -422,7 +411,11 @@ const savedRecords = await Promise.all(
 
     if (result.documentType === "lab_test") {
       dbData.labInfo        = result.labInfo;
-      dbData.tests          = result.tests;
+      // dbData.tests          = result.tests;
+      dbData.tests          = (result.tests || []).map(test => ({
+        ...test,
+        status: sanitizeTestStatus(test.status),   // ← sanitized
+      }));
       dbData.summary        = result.summary;
       dbData.criticalValues = result.criticalValues;
     }
