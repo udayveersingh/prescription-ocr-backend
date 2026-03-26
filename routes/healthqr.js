@@ -1,447 +1,342 @@
 const express = require("express");
+const crypto = require("crypto");
 const Prescription = require("../models/Prescription");
-const authMiddleware = require("./../middleware/authMiddleware");
+const HealthQR = require("../models/HealthQR");
+const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/healthqr/summary
-// Returns compact patient summary — embedded into QR URL hash by the app
-// Query: ?familyMemberId=xxx (optional)
-// ─────────────────────────────────────────────────────────────────────────────
-router.get("/summary", authMiddleware, async (req, res) => {
-  try {
-    const query = { user: req.user.id };
-    if (req.query.familyMemberId) {
-      query.familyMember = req.query.familyMemberId;
-    } else {
-      query.familyMember = null;
-    }
+// ── Helper: compute expiry date ──────────────────────────────
+function getExpiryDate(duration) {
+  const now = new Date();
+  switch (duration) {
+    case "30min": return new Date(now.getTime() + 30 * 60 * 1000);
+    case "6hr":   return new Date(now.getTime() + 6 * 60 * 60 * 1000);
+    case "4wk":   return new Date(now.getTime() + 28 * 24 * 60 * 60 * 1000);
+    case "forever": return null;
+    default: return null;
+  }
+}
 
-    const prescriptions = await Prescription
-      .find(query)
-      .sort({ patientParsedDate: -1 });
+// ── Helper: build compact summary from prescriptions ─────────
+function buildSummary(prescriptions) {
+  if (!prescriptions.length) {
+    return { n: "Patient", meds: [], diag: [], labs: [], hist: [], rad: [] };
+  }
 
-    if (!prescriptions.length) {
-      return res.json({ success: true, summary: { n: "Patient", meds: [], diag: [], labs: [] } });
-    }
+  const latest = prescriptions[0];
+  let p = latest.patientInfo || {};
 
-    const latest = prescriptions[0];
+  console.log("patient ;;;;;;", p.name);
+  if(!p.name){
+    let latest_2 = prescriptions[1];
+    p = latest_2.patientInfo || {};
+    console.log("no patient detail ;;;;");
+  }
 
-    // ── Patient info (from most recent record) ──
-    const p = latest.patientInfo || {};
+  const diag = [...new Set(prescriptions.map(x => x.diagnosis).filter(Boolean))];
 
-    // ── All unique diagnoses ──
-    const diag = [...new Set(
-      prescriptions.map(x => x.diagnosis).filter(Boolean)
-    )];
+  const recentRx = prescriptions.filter(x => x.documentType === "prescription").slice(0, 3);
+  const meds = recentRx.flatMap(x => (x.medications || []).map(m => ({
+    n: m.name, g: m.genericName || null,
+    d: m.dosage || null, f: m.frequency || null, i: m.instructions || null,
+  })));
 
-    // ── Medications from last 3 prescriptions ──
-    const recentRx = prescriptions.filter(x => x.documentType === "prescription").slice(0, 3);
-    const meds = recentRx.flatMap(x => (x.medications || []).map(m => ({
-      n: m.name,
-      g: m.genericName || null,
-      d: m.dosage || null,
-      f: m.frequency || null,
-      i: m.instructions || null,
-    })));
+  const labs = prescriptions
+    .filter(x => x.documentType === "lab_test")
+    .flatMap(x => (x.tests || []).filter(t => t.status !== "normal"))
+    .slice(0, 8)
+    .map(t => ({ n: t.testName, v: t.value, u: t.unit || null, r: t.referenceRange || null, s: t.status }));
 
-    // ── Notable lab results (abnormal only) ──
-    const labs = prescriptions
-      .filter(x => x.documentType === "lab_test")
-      .flatMap(x => (x.tests || []).filter(t => t.status !== "normal"))
-      .slice(0, 8)
-      .map(t => ({
-        n: t.testName,
-        v: t.value,
-        u: t.unit || null,
-        r: t.referenceRange || null,
-        s: t.status,
-      }));
+  const hist = recentRx.map(x => ({
+    dr: x.doctorInfo?.name || null,
+    sp: x.doctorInfo?.specialization || null,
+    cl: x.doctorInfo?.clinic || null,
+    date: x.patientInfo?.date || null,
+  }));
 
-    // ── Recent prescription history (for context) ──
-    const hist = recentRx.map(x => ({
-      dr:   x.doctorInfo?.name || null,
-      sp:   x.doctorInfo?.specialization || null,
-      cl:   x.doctorInfo?.clinic || null,
-      date: x.patientInfo?.date || null,
+  const rad = prescriptions
+    .filter(x => x.documentType === "radiology").slice(0, 2)
+    .map(x => ({
+      t: x.studyInfo?.studyType || null, bp: x.studyInfo?.bodyPart || null,
+      im: x.impression || null, dt: x.patientInfo?.date || null,
     }));
 
-    // ── Radiology impressions ──
-    const rad = prescriptions
-      .filter(x => x.documentType === "radiology")
-      .slice(0, 2)
-      .map(x => ({
-        t:  x.studyInfo?.studyType || null,
-        bp: x.studyInfo?.bodyPart || null,
-        im: x.impression || null,
-        dt: x.patientInfo?.date || null,
-      }));
+    console.log("patient detail ;;;;;;", p);
+  return { n: p.name || null, a: p.age || null, g: p.gender || null, diag, meds, labs, hist, rad };
+}
 
-    const summary = {
-      n:    p.name    || null,   // name
-      a:    p.age     || null,   // age
-      g:    p.gender  || null,   // gender
-      diag,                      // diagnoses array
-      meds,                      // medications array
-      labs,                      // lab results array
-      hist,                      // prescription history
-      rad,                       // radiology
-    };
+// ─────────────────────────────────────────────────────────────
+// POST /api/healthqr/generate  (auth required)
+// Body: { duration, familyMemberId? }
+// ─────────────────────────────────────────────────────────────
+router.post("/generate", authMiddleware, async (req, res) => {
+  try {
+    const { duration, familyMemberId } = req.body;
 
-    return res.json({ success: true, summary });
+    if (!["30min", "6hr", "4wk", "forever"].includes(duration)) {
+      return res.status(400).json({ success: false, error: "Invalid duration" });
+    }
+
+    // Build query
+    const query = { user: req.user.id };
+    query.familyMember = familyMemberId || null;
+
+    const prescriptions = await Prescription.find(query).sort({ patientParsedDate: -1 });
+    const summary = buildSummary(prescriptions);
+
+    // Create token + save to DB
+    const token = crypto.randomBytes(12).toString("base64url");
+    const expiresAt = getExpiryDate(duration);
+
+    await HealthQR.create({
+      token,
+      user: req.user.id,
+      familyMember: familyMemberId || null,
+      duration,
+      expiresAt,
+    });
+
+    return res.json({ success: true, token, expiresAt });
   } catch (err) {
-    console.error("HealthQR summary error:", err);
+    console.error("HealthQR generate error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /share   (PUBLIC — no auth)
-// This is the page the doctor's phone browser opens when they scan the QR.
-// All patient data is in the URL hash — decoded client-side in JS.
-// No server DB lookup needed.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get("/share", (req, res) => {
-     res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline';"
-  );
-  res.send(sharePage());
+// ─────────────────────────────────────────────────────────────
+// GET /api/healthqr/share/:token  (PUBLIC — no auth)
+// Fetches fresh data from DB and renders the HTML page
+// ─────────────────────────────────────────────────────────────
+router.get("/share/:token", async (req, res) => {
+  try {
+    console.log("this is share page ;;;;;");
+    // ✅ Remove the restrictive CSP — allow inline scripts
+    res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline';");
+
+    const record = await HealthQR.findOne({ token: req.params.token });
+
+    // Not found or revoked
+    if (!record || record.isRevoked) {
+      return res.send(sharePage(null, "invalid"));
+    }
+
+    // Expired
+    if (record.expiresAt && new Date() > record.expiresAt) {
+      return res.send(sharePage(null, "expired", record.expiresAt));
+    }
+
+    // Fetch fresh patient data
+    const query = { user: record.user, familyMember: record.familyMember };
+    const prescriptions = await Prescription.find(query).sort({ patientParsedDate: -1 });
+    const summary = buildSummary(prescriptions);
+
+    return res.send(sharePage(summary, null, record.expiresAt));
+  } catch (err) {
+    console.error("HealthQR share error:", err);
+    res.send(sharePage(null, "invalid"));
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// DELETE /api/healthqr/:token  (auth required — revoke)
+// ─────────────────────────────────────────────────────────────
+router.delete("/:token", authMiddleware, async (req, res) => {
+  try {
+    await HealthQR.findOneAndUpdate(
+      { token: req.params.token, user: req.user.id },
+      { isRevoked: true }
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The share HTML page — reads #hash, decodes base64 JSON, renders patient info
-// ─────────────────────────────────────────────────────────────────────────────
-function sharePage() {
+// sharePage(summary, errorType, expiresAt)
+// summary = object | null
+// errorType = "expired" | "invalid" | null
+// expiresAt = Date | null
+function sharePage(summary, errorType, expiresAt) {
+  // ✅ Safe serialization — escapes all special chars for inline script
+  const dataJson = JSON.stringify(summary ?? null);
+  const expJson  = JSON.stringify(expiresAt ? new Date(expiresAt).toISOString() : null);
+  const errJson  = JSON.stringify(errorType ?? null);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>HealthQR™ · parchi.co.in</title>
   <style>
-    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #f5f3ef;
-      color: #1a1a1a;
-      padding-bottom: 48px;
-    }
-
-    /* ── Top bar ── */
-    .topbar {
-      background: #fff;
-      padding: 14px 20px;
-      display: flex; align-items: center; justify-content: space-between;
-      border-bottom: 1px solid #e8e4dc;
-      position: sticky; top: 0; z-index: 10;
-    }
-    .brand { font-size: 17px; font-weight: 800; }
-    .brand span { color: #2ba55d; }
-    .expiry-badge {
-      font-size: 11px; font-weight: 600;
-      background: #e8f7ee; color: #2ba55d;
-      padding: 4px 10px; border-radius: 999px;
-    }
-    .expiry-badge.expired {
-      background: #fee2e2; color: #dc2626;
-    }
-
-    /* ── Patient hero ── */
-    .hero {
-      background: linear-gradient(135deg, #2ba55d, #22c26e);
-      padding: 24px 20px 28px;
-      color: #fff;
-    }
-    .patient-name { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
-    .patient-demo { font-size: 14px; opacity: 0.85; margin-top: 4px; }
-    .disclaimer {
-      margin-top: 14px;
-      background: rgba(255,255,255,0.15);
-      border-radius: 10px; padding: 10px 14px;
-      font-size: 12px; line-height: 1.5; opacity: 0.9;
-    }
-
-    /* ── Sections ── */
-    .section { margin: 14px 16px 0; }
-    .section-title {
-      font-size: 11px; font-weight: 700; color: #6b7280;
-      text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px;
-    }
-    .card {
-      background: #fff; border-radius: 16px; padding: 16px;
-      border: 1px solid #e8e4dc;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-    }
-
-    /* ── Tags ── */
-    .tags { display: flex; flex-wrap: wrap; gap: 8px; }
-    .tag {
-      background: #e8f7ee; color: #1a7a43;
-      font-size: 13px; font-weight: 600;
-      padding: 6px 12px; border-radius: 999px;
-    }
-
-    /* ── Medications ── */
-    .med-row { padding: 10px 0; border-bottom: 1px solid #f3f4f6; }
-    .med-row:first-child { padding-top: 0; }
-    .med-row:last-child  { border-bottom: none; padding-bottom: 0; }
-    .med-name { font-size: 14px; font-weight: 600; }
-    .med-generic { font-weight: 400; color: #6b7280; font-size: 13px; }
-    .med-meta { font-size: 12px; color: #6b7280; margin-top: 2px; }
-
-    /* ── Lab results ── */
-    .lab-row { padding: 10px 0; border-bottom: 1px solid #f3f4f6; }
-    .lab-row:first-child { padding-top: 0; }
-    .lab-row:last-child  { border-bottom: none; padding-bottom: 0; }
-    .lab-top { display: flex; align-items: center; justify-content: space-between; }
-    .lab-name { font-size: 14px; font-weight: 600; }
-    .lab-val  { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .lab-ref  { font-size: 11px; color: #9ca3af; margin-top: 2px; }
-    .badge {
-      font-size: 10px; font-weight: 700; padding: 2px 8px;
-      border-radius: 999px; text-transform: uppercase; margin-left: 6px;
-    }
-    .badge.high, .badge.critical { background: #fee2e2; color: #dc2626; }
-    .badge.low  { background: #fef3c7; color: #d97706; }
-    .high .lab-val, .critical .lab-val { color: #dc2626; }
-    .low  .lab-val { color: #d97706; }
-
-    /* ── History ── */
-    .hist-row {
-      display: flex; justify-content: space-between;
-      padding: 10px 0; border-bottom: 1px solid #f3f4f6;
-    }
-    .hist-row:first-child { padding-top: 0; }
-    .hist-row:last-child  { border-bottom: none; padding-bottom: 0; }
-    .hist-dr   { font-size: 14px; font-weight: 600; }
-    .hist-sub  { font-size: 12px; color: #6b7280; margin-top: 2px; }
-    .hist-date { font-size: 11px; color: #9ca3af; white-space: nowrap; margin-left: 8px; flex-shrink: 0; }
-
-    /* ── Radiology ── */
-    .rad-row { padding: 10px 0; border-bottom: 1px solid #f3f4f6; }
-    .rad-row:first-child { padding-top: 0; }
-    .rad-row:last-child  { border-bottom: none; padding-bottom: 0; }
-    .rad-type { font-size: 14px; font-weight: 600; }
-    .rad-imp  { font-size: 13px; color: #374151; margin-top: 4px; line-height: 1.5; }
-
-    /* ── Empty ── */
-    .empty { font-size: 13px; color: #9ca3af; }
-
-    /* ── Error / expired ── */
-    .error-wrap {
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; padding: 24px;
-    }
-    .error-card {
-      background: #fff; border-radius: 20px; padding: 32px 24px;
-      max-width: 360px; width: 100%; text-align: center;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-    }
-    .error-icon { font-size: 48px; margin-bottom: 16px; }
-    .error-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
-    .error-msg   { font-size: 14px; color: #6b7280; line-height: 1.6; }
-
-    /* ── Footer ── */
-    .footer { text-align: center; margin-top: 28px; font-size: 12px; color: #9ca3af; padding: 0 20px; }
-    .footer strong { color: #1a1a1a; }
-    .footer em { color: #2ba55d; font-style: normal; }
-
-    /* ── Loading ── */
+    /* ... all your CSS ... */
     #loading { display:flex; align-items:center; justify-content:center; min-height:100vh; }
-    .spinner {
-      width: 36px; height: 36px; border-radius: 50%;
-      border: 3px solid #e8e4dc; border-top-color: #2ba55d;
-      animation: spin 0.7s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { width:36px; height:36px; border-radius:50%; border:3px solid #e8e4dc; border-top-color:#2ba55d; animation:spin 0.7s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
   </style>
 </head>
 <body>
-
 <div id="loading"><div class="spinner"></div></div>
 <div id="app" style="display:none"></div>
 
 <script>
-(function () {
+  // ── Wrap everything in try/catch so errors are visible ──
+  try {
+    var __DATA__  = ${dataJson};
+    var __EXP__   = ${expJson};
+    var __ERROR__ = ${errJson};
 
-  // ── Decode base64 hash ──────────────────────────────────────────────────
-  function decode(encoded) {
-    try {
-      return JSON.parse(decodeURIComponent(escape(atob(encoded))));
-    } catch {
-      return null;
+    var loading = document.getElementById("loading");
+    var app     = document.getElementById("app");
+
+    loading.style.display = "none";
+    app.style.display     = "block";
+
+    if (__ERROR__ === "expired") {
+      app.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:360px;width:100%;text-align:center"><div style="font-size:48px;margin-bottom:16px">⏰</div><div style="font-size:20px;font-weight:700;margin-bottom:8px">QR Expired</div><p style="font-size:14px;color:#6b7280">Ask the patient to generate a new one.</p></div></div>';
+    } else if (__ERROR__ === "invalid" || !__DATA__) {
+      app.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:360px;width:100%;text-align:center"><div style="font-size:48px;margin-bottom:16px">⚠️</div><div style="font-size:20px;font-weight:700;margin-bottom:8px">Invalid QR</div><p style="font-size:14px;color:#6b7280">This QR code is invalid or has been revoked.</p></div></div>';
+    } else {
+      render(__DATA__, __EXP__);
     }
+
+  } catch(e) {
+    // ✅ Show error visibly instead of blank page
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    document.getElementById("app").innerHTML =
+      '<div style="padding:24px;font-family:monospace;color:red">'
+      + '<strong>Script Error:</strong><br/>' + e.message + '</div>';
   }
 
-  // ── Check expiry ────────────────────────────────────────────────────────
-  function isExpired(exp) {
-    if (!exp) return false;
-    return new Date() > new Date(exp);
-  }
-
-  // ── Format date ─────────────────────────────────────────────────────────
+  // ── Render functions ──────────────────────────────────────
   function fmt(iso) {
     if (!iso) return "";
-    return new Date(iso).toLocaleDateString("en-IN", {
-      day: "numeric", month: "short", year: "numeric",
-    });
+    return new Date(iso).toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" });
   }
 
-  // ── Render helpers ──────────────────────────────────────────────────────
-  function tag(cls, html) { return '<span class="tag">' + html + '</span>'; }
-
   function renderMeds(meds) {
-    if (!meds || !meds.length) return '<p class="empty">No medications on record</p>';
+    if (!meds || !meds.length) return '<p style="font-size:13px;color:#9ca3af">No medications on record</p>';
     return meds.map(function(m) {
       var meta = [m.d, m.f, m.i].filter(Boolean).join(" · ");
-      return '<div class="med-row">'
-        + '<div class="med-name">' + m.n
-        + (m.g ? ' <span class="med-generic">(' + m.g + ')</span>' : '')
-        + '</div>'
-        + (meta ? '<div class="med-meta">' + meta + '</div>' : '')
+      return '<div style="padding:10px 0;border-bottom:1px solid #f3f4f6">'
+        + '<div style="font-size:14px;font-weight:600">' + escHtml(m.n)
+        + (m.g ? ' <span style="font-weight:400;color:#6b7280">(' + escHtml(m.g) + ')</span>' : '') + '</div>'
+        + (meta ? '<div style="font-size:12px;color:#6b7280;margin-top:2px">' + escHtml(meta) + '</div>' : '')
         + '</div>';
     }).join("");
   }
 
   function renderLabs(labs) {
-    if (!labs || !labs.length) return '<p class="empty">No abnormal lab values</p>';
+    if (!labs || !labs.length) return '<p style="font-size:13px;color:#9ca3af">No abnormal lab values</p>';
     return labs.map(function(t) {
-      return '<div class="lab-row ' + t.s + '">'
-        + '<div class="lab-top">'
-        + '<span class="lab-name">' + t.n + '</span>'
-        + '<span>'
-        + '<span class="lab-val">' + t.v + (t.u ? ' ' + t.u : '') + '</span>'
-        + '<span class="badge ' + t.s + '">' + t.s.toUpperCase() + '</span>'
-        + '</span>'
+      var color = t.s === "high" || t.s === "critical" ? "#dc2626" : t.s === "low" ? "#d97706" : "#1a1a1a";
+      return '<div style="padding:10px 0;border-bottom:1px solid #f3f4f6">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center">'
+        + '<span style="font-size:14px;font-weight:600">' + escHtml(t.n) + '</span>'
+        + '<span style="font-size:15px;font-weight:700;color:' + color + '">' + escHtml(t.v) + (t.u ? ' ' + escHtml(t.u) : '') + '</span>'
         + '</div>'
-        + (t.r ? '<div class="lab-ref">Ref: ' + t.r + '</div>' : '')
+        + (t.r ? '<div style="font-size:11px;color:#9ca3af;margin-top:2px">Ref: ' + escHtml(t.r) + '</div>' : '')
         + '</div>';
     }).join("");
   }
 
   function renderHist(hist) {
-    if (!hist || !hist.length) return '<p class="empty">No history</p>';
+    if (!hist || !hist.length) return '<p style="font-size:13px;color:#9ca3af">No history</p>';
     return hist.map(function(h) {
       var sub = [h.sp, h.cl].filter(Boolean).join(" · ");
-      return '<div class="hist-row">'
-        + '<div>'
-        + '<div class="hist-dr">' + (h.dr || "Unknown Doctor") + '</div>'
-        + (sub ? '<div class="hist-sub">' + sub + '</div>' : '')
-        + '</div>'
-        + (h.date ? '<div class="hist-date">' + h.date + '</div>' : '')
+      return '<div style="padding:10px 0;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between">'
+        + '<div><div style="font-size:14px;font-weight:600">' + escHtml(h.dr || "Unknown Doctor") + '</div>'
+        + (sub ? '<div style="font-size:12px;color:#6b7280;margin-top:2px">' + escHtml(sub) + '</div>' : '') + '</div>'
+        + (h.date ? '<div style="font-size:11px;color:#9ca3af;white-space:nowrap;margin-left:8px">' + escHtml(h.date) + '</div>' : '')
         + '</div>';
     }).join("");
   }
 
-  function renderRad(rad) {
-    if (!rad || !rad.length) return null;
-    return rad.map(function(r) {
-      return '<div class="rad-row">'
-        + '<div class="rad-type">' + (r.t || "Study") + (r.bp ? " — " + r.bp : "") + '</div>'
-        + (r.dt ? '<div class="hist-sub">' + r.dt + '</div>' : '')
-        + (r.im ? '<div class="rad-imp">' + r.im + '</div>' : '')
-        + '</div>';
-    }).join("");
+  function escHtml(str) {
+    if (!str) return "";
+    return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
-  // ── Main render ─────────────────────────────────────────────────────────
-  function render(d) {
-    var app = document.getElementById("app");
-
-    // Expiry check
-    if (isExpired(d.exp)) {
-      app.innerHTML = '<div class="error-wrap"><div class="error-card">'
-        + '<div class="error-icon">⏰</div>'
-        + '<div class="error-title">QR Expired</div>'
-        + '<p class="error-msg">This HealthQR expired on ' + fmt(d.exp) + '.<br/>Ask the patient to generate a new one.</p>'
-        + '<p style="margin-top:20px;font-size:13px;font-weight:700">parchi<span style="color:#2ba55d">.co.in</span></p>'
-        + '</div></div>';
-      return;
-    }
-
-    var name   = d.n || "Patient";
+  function render(d, exp) {
+    var app    = document.getElementById("app");
+    var name   = escHtml(d.n || "Patient");
     var demo   = [d.a ? d.a + " yrs" : null, d.g].filter(Boolean).join(" · ");
-    var expiry = d.exp ? "Expires " + fmt(d.exp) : "No expiry";
-    var diags  = (d.diag || []).map(function(x) { return tag("tag", x); }).join("") || '<p class="empty">No diagnosis on record</p>';
-    var radHtml = renderRad(d.rad);
+    var expiry = exp ? "Expires " + fmt(exp) : "No expiry";
+
+    // Build demographic chips
+  var chips = [];
+  if (d.a) chips.push("🎂 " + d.a + " yrs");
+  if (d.g) chips.push("👤 " + d.g);
+  if (d.ph) chips.push("📞 " + d.ph);
+  if (d.id) chips.push("🪪 " + d.id);
+  var chipsHtml = chips.map(function(c) {
+    return '<span style="background:rgba(255,255,255,0.2);padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600">' + escHtml(c) + '</span>';
+  }).join("");
+
+    var diags  = (d.diag || []).map(function(x) {
+      return '<span style="background:#e8f7ee;color:#1a7a43;font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px">' + escHtml(x) + '</span>';
+    }).join("") || '<p style="font-size:13px;color:#9ca3af">No diagnosis on record</p>';
 
     app.innerHTML =
-      // Top bar
-      '<div class="topbar">'
-      + '<div class="brand">parchi<span>.co.in</span></div>'
-      + '<div class="expiry-badge">🕐 ' + expiry + '</div>'
+      // Topbar
+      '<div style="background:#fff;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e8e4dc;position:sticky;top:0;z-index:10">'
+      + '<div style="font-size:17px;font-weight:800">parchi<span style="color:#2ba55d">.co.in</span></div>'
+      + '<div style="font-size:11px;font-weight:600;background:#e8f7ee;color:#2ba55d;padding:4px 10px;border-radius:999px">🕐 ' + expiry + '</div>'
       + '</div>'
-
       // Hero
-      + '<div class="hero">'
-      + '<div class="patient-name">' + name + '</div>'
-      + (demo ? '<div class="patient-demo">' + demo + '</div>' : '')
-      + '<div class="disclaimer">📋 Health summary shared via HealthQR™.<br/>For clinical reference — not a substitute for consultation.</div>'
+      + '<div style="background:linear-gradient(135deg,#2ba55d,#22c26e);padding:24px 20px 28px;color:#fff">'
+      + '<div style="font-size:28px;font-weight:800">' + name + '</div>'
+      + (demo ? '<div style="font-size:14px;opacity:0.85;margin-top:4px">' + escHtml(demo) + '</div>' : '')
+      + '<div style="margin-top:14px;background:rgba(255,255,255,0.15);border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.5">📋 Health summary shared via HealthQR™.<br/>For clinical reference — not a substitute for consultation.</div>'
       + '</div>'
-
+         // ── Patient Details card ──
+    + section("Patient Details", patientDetailsHtml(d))
       // Diagnoses
-      + '<div class="section"><div class="section-title">Diagnoses / Conditions</div>'
-      + '<div class="card"><div class="tags">' + diags + '</div></div></div>'
-
+      + section("Diagnoses / Conditions", '<div style="display:flex;flex-wrap:wrap;gap:8px">' + diags + '</div>')
       // Medications
-      + '<div class="section"><div class="section-title">Current Medications</div>'
-      + '<div class="card">' + renderMeds(d.meds) + '</div></div>'
-
-      // Lab results
-      + '<div class="section"><div class="section-title">Notable Lab Results</div>'
-      + '<div class="card">' + renderLabs(d.labs) + '</div></div>'
-
-      // Prescription history
-      + '<div class="section"><div class="section-title">Prescription History</div>'
-      + '<div class="card">' + renderHist(d.hist) + '</div></div>'
-
-      // Radiology (only if present)
-      + (radHtml ? '<div class="section"><div class="section-title">Radiology</div><div class="card">' + radHtml + '</div></div>' : '')
-
+      + section("Current Medications", renderMeds(d.meds))
+      // Labs
+      + section("Notable Lab Results", renderLabs(d.labs))
+      // History
+      + section("Prescription History", renderHist(d.hist))
       // Footer
-      + '<div class="footer">'
-      + '<p>Shared via <strong>parchi<em>.co.in</em></strong> HealthQR™</p>'
-      + '<p style="margin-top:6px">🔒 Time-limited · Patient-controlled</p>'
+      + '<div style="text-align:center;margin-top:28px;font-size:12px;color:#9ca3af;padding:0 20px">'
+      + '<p>Shared via <strong style="color:#1a1a1a">parchi<span style="color:#2ba55d">.co.in</span></strong> HealthQR™</p>'
+      + '<p style="margin-top:6px">🔒 Time-limited · Patient-controlled</p></div>';
+  }
+
+  // ── New: patient details card ──
+function patientDetailsHtml(d) {
+  var rows = [];
+  if (d.n)  rows.push(["Full Name",   d.n]);
+  if (d.a)  rows.push(["Age",         d.a + " years"]);
+  if (d.g)  rows.push(["Gender",      d.g]);
+  if (d.ph) rows.push(["Phone",       d.ph]);
+  if (d.id) rows.push(["Patient ID",  d.id]);
+
+  if (!rows.length) return '<p style="font-size:13px;color:#9ca3af;margin:0">No patient details available</p>';
+
+  return rows.map(function(r, i) {
+    var isLast = i === rows.length - 1;
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;'
+      + (isLast ? '' : 'border-bottom:1px solid #f3f4f6') + '">'
+      + '<span style="font-size:12px;color:#6b7280;font-weight:500">' + r[0] + '</span>'
+      + '<span style="font-size:14px;font-weight:600;color:#1a1a1a">' + escHtml(r[1]) + '</span>'
+      + '</div>';
+  }).join("");
+}
+
+
+  function section(title, content) {
+    return '<div style="margin:14px 16px 0">'
+      + '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:8px">' + title + '</div>'
+      + '<div style="background:#fff;border-radius:16px;padding:16px;border:1px solid #e8e4dc;box-shadow:0 2px 8px rgba(0,0,0,0.04)">' + content + '</div>'
       + '</div>';
   }
-
-  // ── Boot ────────────────────────────────────────────────────────────────
-  var hash = window.location.hash.slice(1);
-  var loading = document.getElementById("loading");
-  var app = document.getElementById("app");
-
-  if (!hash) {
-    loading.style.display = "none";
-    app.style.display = "block";
-    app.innerHTML = '<div class="error-wrap"><div class="error-card">'
-      + '<div class="error-icon">⚠️</div>'
-      + '<div class="error-title">Invalid QR</div>'
-      + '<p class="error-msg">This QR code is invalid or has no data.</p>'
-      + '</div></div>';
-    return;
-  }
-
-  var data = decode(hash);
-  loading.style.display = "none";
-  app.style.display = "block";
-
-  if (!data) {
-    app.innerHTML = '<div class="error-wrap"><div class="error-card">'
-      + '<div class="error-icon">⚠️</div>'
-      + '<div class="error-title">Unreadable QR</div>'
-      + '<p class="error-msg">Could not decode the QR data. Try scanning again.</p>'
-      + '</div></div>';
-    return;
-  }
-
-  render(data);
-
-})();
 </script>
 </body>
 </html>`;
