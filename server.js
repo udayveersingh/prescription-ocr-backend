@@ -17,6 +17,13 @@ const fs = require("fs");
 const path = require("path");
 const { parsePatientDateString } = require("./utils/utils");
 const HealthQR = require("./models/HealthQR");
+const cloudinary = require("cloudinary").v2;
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -184,6 +191,18 @@ app.get('/api/update-prescriptions', async(req, res) =>{
   }
 })
 
+app.get("/backup", (req, res) => {
+  const fs = require("fs");
+  const archiver = require("archiver");
+
+  const archive = archiver("zip");
+  res.attachment("backup.zip");
+
+  archive.pipe(res);
+  archive.directory("uploads/", false);
+  archive.finalize();
+});
+
 // In server.js — add this route
 app.put("/api/prescription/assign-family", authMiddleware, async (req, res) => {
   try {
@@ -320,6 +339,23 @@ function sanitizeTestStatus(status) {
   return map[s] || "normal"; // fallback to "normal" if unknown
 }
 
+const uploadToCloudinary = (buffer) => {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_stream(
+      {
+        folder: "prescriptions",
+        transformation: [
+          { quality: "auto", fetch_format: "auto" }
+        ],
+      },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    ).end(buffer);
+  });
+};
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
@@ -346,9 +382,11 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         const imageBuffer = Buffer.from(base64Image, "base64");
 
         // Save file
-        const fileName = `scan_${Date.now()}_${index}.jpg`;
-        const filePath = path.join(userFolder, fileName);
-        fs.writeFileSync(filePath, imageBuffer);
+        // const fileName = `scan_${Date.now()}_${index}.jpg`;
+        // const filePath = path.join(userFolder, fileName);
+        // fs.writeFileSync(filePath, imageBuffer);
+        const uploadResult = await uploadToCloudinary(imageBuffer);
+        const imageUrl = uploadResult.secure_url;
 
         // Process + analyze
         const processedImage = await processImage(imageBuffer);
@@ -369,7 +407,8 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
 
         return {
           result,
-          imagePath: `/uploads/${req.user.id}/${fileName}`,
+          // imagePath: `/uploads/${req.user.id}/${fileName}`,
+          imagePath: imageUrl,
           imageBuffer,
         };
       })
