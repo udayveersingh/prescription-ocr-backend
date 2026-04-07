@@ -390,6 +390,77 @@ const uploadToCloudinary = (buffer) => {
   });
 };
 
+app.get("/api/prescription/summary", authMiddleware, async (req, res) => {
+  try {
+    const query = { user: req.user.id };
+    if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
+
+    const records = await Prescription.find(query).sort({ createdAt: -1 });
+
+    const medications = [];
+    const tests       = [];
+    const doctors     = [];
+    const diagnoses   = [];
+    const warnings    = [];
+
+    records.forEach(r => {
+      if (r.documentType === "prescription") {
+        r.medications?.forEach(m => {
+          if (m.name) medications.push({ name: m.name, dosage: m.dosage, frequency: m.frequency, duration: m.duration, date: r.createdAt });
+        });
+        if (r.doctorInfo?.name) {
+          const exists = doctors.find(d => d.name === r.doctorInfo.name);
+          if (!exists) doctors.push({ name: r.doctorInfo.name, specialization: r.doctorInfo.specialization, clinic: r.doctorInfo.clinic, lastVisit: r.createdAt });
+        }
+        if (r.diagnosis) diagnoses.push({ text: r.diagnosis, date: r.createdAt });
+        r.symptoms?.forEach(s => { if (s) diagnoses.push({ text: s, date: r.createdAt, type: "symptom" }); });
+      }
+      if (r.documentType === "lab_test") {
+        r.tests?.forEach(t => {
+          tests.push({ testName: t.testName, value: t.value, unit: t.unit, status: t.status, referenceRange: t.referenceRange, date: r.createdAt });
+        });
+        r.criticalValues?.forEach(v => warnings.push({ text: v, date: r.createdAt }));
+      }
+      r.warnings?.forEach(w => warnings.push({ text: w, date: r.createdAt }));
+    });
+
+    // ── Groq instead of Anthropic ──
+    const Groq = require("groq-sdk");
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    const response = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 300,
+      temperature: 0.3,
+      messages: [{
+        role: "user",
+        content: `You are a medical summary assistant. Based on the following patient data, write a clear, friendly health summary in 3-4 sentences covering overall health status, key concerns, and any patterns you notice. Do not give medical advice. Keep it simple for a non-medical person to understand.
+
+Patient Data:
+- Total Records: ${records.length}
+- Medications: ${medications.map(m => m.name).join(", ") || "None"}
+- Diagnoses: ${diagnoses.filter(d => !d.type).map(d => d.text).join(", ") || "None"}
+- Abnormal Tests: ${tests.filter(t => t.status !== "normal").map(t => `${t.testName} (${t.status})`).join(", ") || "None"}
+- Warnings: ${warnings.map(w => w.text).join(", ") || "None"}
+- Doctors Visited: ${doctors.map(d => d.name).join(", ") || "None"}
+
+Write the summary now:`,
+      }],
+    });
+
+    const aiSummary = response.choices[0].message.content || "Summary unavailable.";
+
+    res.json({
+      success: true,
+      data: { aiSummary, medications, tests, doctors, diagnoses, warnings, totalRecords: records.length }
+    });
+
+  } catch (err) {
+    console.error("Summary error:", err);
+    res.status(500).json({ error: "Failed to generate summary" });
+  }
+});
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
