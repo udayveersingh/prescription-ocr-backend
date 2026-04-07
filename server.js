@@ -32,7 +32,7 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
   origin: "*",
-  methods: ["GET", "POST","PUT", "OPTIONS"],
+  methods: ["GET", "POST","PUT", "OPTIONS","DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json({ limit: "10mb" }));
@@ -171,6 +171,23 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
   }
 
+});
+
+app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
+  try {
+    const prescription = await Prescription.findOneAndDelete({
+      _id: req.params.id,
+      user: req.user.id, // ← ensures user can only delete their own
+    });
+
+    if (!prescription) {
+      return res.status(404).json({ error: "Record not found" });
+    }
+
+    res.json({ success: true, message: "Record deleted" });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete record" });
+  }
 });
 
 app.get('/api/update-prescriptions', async(req, res) =>{
