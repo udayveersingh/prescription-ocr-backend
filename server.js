@@ -461,6 +461,83 @@ Write the summary now:`,
   }
 });
 
+
+app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) => {
+  try {
+    const { question, familyMemberId, chatHistory = [] } = req.body;
+
+    // ── Fetch all records for context ──
+    const query = { user: req.user.id };
+    if (familyMemberId) query.familyMember = familyMemberId;
+    const records = await Prescription.find(query).sort({ createdAt: -1 });
+
+    // ── Build medical context from records ──
+    const context = records.map(r => {
+      if (r.documentType === "prescription") {
+        return `
+Prescription (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
+- Patient: ${r.patientInfo?.name || "Unknown"}
+- Doctor: ${r.doctorInfo?.name || "Unknown"} (${r.doctorInfo?.specialization || ""})
+- Diagnosis: ${r.diagnosis || "Not mentioned"}
+- Symptoms: ${r.symptoms?.join(", ") || "None"}
+- Medications: ${r.medications?.map(m => `${m.name} ${m.dosage || ""} ${m.frequency || ""}`).join(", ") || "None"}
+- Notes: ${r.additionalNotes || "None"}
+        `.trim();
+      }
+      if (r.documentType === "lab_test") {
+        return `
+Lab Test (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
+- Tests: ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit} (${t.status})`).join(", ") || "None"}
+- Critical Values: ${r.criticalValues?.join(", ") || "None"}
+- Summary: ${r.summary || "None"}
+        `.trim();
+      }
+      if (r.documentType === "radiology") {
+        return `
+Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
+- Study: ${r.studyInfo?.studyType} - ${r.studyInfo?.bodyPart}
+- Findings: ${r.findings || "None"}
+- Impression: ${r.impression || "None"}
+        `.trim();
+      }
+    }).filter(Boolean).join("\n\n");
+
+    const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below. 
+Always be clear, friendly, and easy to understand for a non-medical person.
+Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
+If the answer is not in the records, say "I don't see this in your records."
+
+PATIENT MEDICAL RECORDS:
+${context || "No records found."}`;
+
+    // ── Build messages with chat history ──
+    const Groq = require("groq-sdk");
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    const messages = [
+      ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: question },
+    ];
+
+    const response = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 500,
+      temperature: 0.3,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...messages,
+      ],
+    });
+
+    const answer = response.choices[0].message.content;
+
+    res.json({ success: true, answer });
+  } catch (err) {
+    console.error("Second opinion error:", err);
+    res.status(500).json({ error: "Failed to get second opinion" });
+  }
+});
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
