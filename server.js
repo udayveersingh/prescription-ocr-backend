@@ -32,7 +32,7 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
   origin: "*",
-  methods: ["GET", "POST","PUT", "OPTIONS","DELETE"],
+  methods: ["GET", "POST","PUT", "OPTIONS","DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json({ limit: "10mb" }));
@@ -187,6 +187,23 @@ app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
     res.json({ success: true, message: "Record deleted" });
   } catch (err) {
     res.status(500).json({ error: "Failed to delete record" });
+  }
+});
+
+app.patch("/api/prescription/:id/medication/:medIndex", authMiddleware, async (req, res) => {
+  try {
+    const { id, medIndex } = req.params;
+    const { name } = req.body;
+
+    const prescription = await Prescription.findOne({ _id: id, user: req.user.id });
+    if (!prescription) return res.status(404).json({ error: "Not found" });
+
+    prescription.medications[medIndex].name = name;
+    await prescription.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update" });
   }
 });
 
