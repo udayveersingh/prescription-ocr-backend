@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema({
     required: true
   },
   googleId: { type: String, default: null },
+  termsAcceptedAt: { type: Date, default: null }, // ← ADD THIS
   createdAt: {
     type: Date,
     default: Date.now

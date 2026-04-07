@@ -52,7 +52,7 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
 
-    const { email, password } = req.body;
+    const { email, password, acceptTerms } = req.body;
 
     const user = await User.findOne({ email });
 
@@ -64,6 +64,19 @@ exports.login = async (req, res) => {
 
     if (!valid) {
       return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+     // If user hasn't accepted terms yet, and is accepting now → save it
+    if (!user.termsAcceptedAt && acceptTerms) {
+      console.log(`User ${user.email} accepted terms at login`);
+      user.termsAcceptedAt = new Date();
+      await user.save();
+    }
+
+     // If terms never accepted and not accepting now → reject
+    if (!user.termsAcceptedAt && !acceptTerms) {
+      console.log("term not expected");
+      return res.status(403).json({ error: "terms_required" });
     }
 
     const token = jwt.sign(
@@ -78,7 +91,8 @@ exports.login = async (req, res) => {
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
+        termsAcceptedAt: user.termsAcceptedAt
       }
     });
 
@@ -90,24 +104,35 @@ exports.login = async (req, res) => {
 
 exports.google = async (req, res) => {
   try {
-    const { googleId, email, name } = req.body;
+    const { googleId, email, name, acceptTerms } = req.body;
     if (!googleId || !email) 
       return res.status(400).json({ error: "googleId and email required" });
 
     let user = await User.findOne({ email });
 
+    console.log("already have user ;;;;;;", user);
+
     if (!user) {
+       if (!acceptTerms) return res.status(403).json({ error: "terms_required" });
       user = await User.create({
         name,
         email,
         password: `google_${googleId}`,
         googleId,
+        termsAcceptedAt: new Date(),
       });
       await FamilyMember.create({
         user: user._id,
         name,
         relation: "Self",
       });
+    }else {
+      console.log("user first term accept", user.termsAcceptedAt, acceptTerms);
+      if (!user.termsAcceptedAt && acceptTerms) { // ← existing user accepting for first time
+        user.termsAcceptedAt = new Date();
+        await user.save();
+      }
+      if (!user.termsAcceptedAt && !acceptTerms) return res.status(403).json({ error: "terms_required" });
     }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
