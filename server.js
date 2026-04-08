@@ -538,6 +538,154 @@ ${context || "No records found."}`;
   }
 });
 
+app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
+  try {
+    const query = { user: req.user.id };
+    if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
+
+    const records = await Prescription.find(query).sort({ createdAt: -1 });
+
+    // ── Documents list ──
+    const documents = records.map(r => {
+      if (r.documentType === "prescription") {
+        const firstMed = r.medications?.[0];
+        return {
+          _id: r._id, type: "prescription", icon: "pill",
+          title: firstMed ? `${firstMed.name}${firstMed.frequency ? " — " + firstMed.frequency : ""}` : "Prescription",
+          subtitle: `${r.patientInfo?.date ? formatDate(r.patientInfo.date) : formatDate(r.createdAt)} · ${r.doctorInfo?.name || ""}`,
+          tag: r.followUpDate ? `Refill ${formatDate(r.followUpDate)}` : null,
+          tagColor: "#e8f5e9", tagTextColor: "#2e7d32", createdAt: r.createdAt,
+        };
+      }
+      if (r.documentType === "lab_test") {
+        const allNormal = r.tests?.every(t => t.status === "normal");
+        const critical  = r.tests?.some(t => t.status === "critical");
+        const firstTest = r.tests?.[0];
+        return {
+          _id: r._id, type: "lab_test", icon: "flask",
+          title: firstTest?.testName || r.labInfo?.labName || "Lab Report",
+          subtitle: `${formatDate(r.createdAt)} · ${r.labInfo?.labName || ""}`,
+          tag: critical ? "Critical ⚠️" : allNormal ? "All normal ✓" : "Review needed",
+          tagColor: critical ? "#fef2f2" : allNormal ? "#f1f8e9" : "#fffde7",
+          tagTextColor: critical ? "#c62828" : allNormal ? "#388e3c" : "#f57f17",
+          createdAt: r.createdAt,
+        };
+      }
+      if (r.documentType === "radiology") {
+        return {
+          _id: r._id, type: "radiology", icon: "scan",
+          title: `${r.studyInfo?.studyType || "Radiology"} — ${r.studyInfo?.bodyPart || ""}`,
+          subtitle: formatDate(r.createdAt), tag: null, createdAt: r.createdAt,
+        };
+      }
+      return null;
+    }).filter(Boolean);
+
+    // ── Build context for AI ──
+    const medications   = [];
+    const diagnoses     = [];
+    const warnings      = [];
+    const abnormalTests = [];
+
+    records.forEach(r => {
+      if (r.documentType === "prescription") {
+        r.medications?.forEach(m => { if (m.name) medications.push(m.name); });
+        if (r.diagnosis) diagnoses.push(r.diagnosis);
+        r.warnings?.forEach(w => warnings.push(w));
+      }
+      if (r.documentType === "lab_test") {
+        r.tests?.filter(t => t.status !== "normal").forEach(t => abnormalTests.push(`${t.testName} (${t.status})`));
+        r.criticalValues?.forEach(v => warnings.push(v));
+      }
+    });
+
+    const Groq = require("groq-sdk");
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    // ── AI Health Summary ──
+    const summaryRes = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 200,
+      temperature: 0.3,
+      messages: [{
+        role: "user",
+        content: `You are a medical assistant. Write a 2-sentence friendly health summary based on:
+- Medications: ${medications.join(", ") || "None"}
+- Diagnoses: ${diagnoses.join(", ") || "None"}
+- Abnormal Tests: ${abnormalTests.join(", ") || "None"}
+- Warnings: ${warnings.join(", ") || "None"}
+- Total Records: ${records.length}
+Be concise and simple. Do not give medical advice.`,
+      }],
+    });
+    const aiSummary = summaryRes.choices[0].message.content || "";
+
+    // ── AI Health Trends (dynamic, based on actual records) ──
+    const recordsSummary = records.map(r => {
+      if (r.documentType === "lab_test") {
+        return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
+      }
+      if (r.documentType === "prescription") {
+        return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map(m => m.name).join(", ")}`;
+      }
+      if (r.documentType === "radiology") {
+        return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
+      }
+    }).filter(Boolean).join("\n");
+
+    const trendsRes = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 400,
+      temperature: 0.1,
+      messages: [{
+        role: "user",
+        content: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
+Only include metrics that actually have numeric values in the records.
+
+Records:
+${recordsSummary || "No records"}
+
+Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
+[{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
+
+If no numeric metrics found, respond with: []`,
+      }],
+    });
+
+    let trends = [];
+    try {
+      const raw = trendsRes.choices[0].message.content.trim();
+      trends = JSON.parse(raw);
+    } catch {
+      trends = [];
+    }
+
+    res.json({
+      success: true,
+      data: { totalRecords: records.length, aiSummary, trends, documents }
+    });
+
+  } catch (err) {
+    console.error("Member profile error:", err);
+    res.status(500).json({ error: "Failed to load profile" });
+  }
+});
+
+function formatDate(dateStr) {
+  if (!dateStr) return "";
+  return new Date(dateStr).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+}
+
+app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
+  try {
+    const record = await Prescription.findOne({ _id: req.params.id, user: req.user.id });
+    if (!record) return res.status(404).json({ error: "Not found" });
+    res.json({ success: true, data: record });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch document" });
+  }
+});
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
