@@ -686,6 +686,64 @@ app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
   }
 });
 
+app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
+  try {
+    const query = { user: req.user.id };
+    if (req.body.familyMemberId) query.familyMember = req.body.familyMemberId;
+
+    const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10);
+
+    if (!records.length) {
+      return res.json({
+        success: true,
+        questions: ["What should I know about my health?", "How can I improve my health?"]
+      });
+    }
+
+    // ── Build context ──
+    const context = records.map(r => {
+      if (r.documentType === "prescription")
+        return `Prescription: Meds: ${r.medications?.map(m => m.name).join(", ")}, Diagnosis: ${r.diagnosis || "unknown"}`;
+      if (r.documentType === "lab_test")
+        return `Lab Test: ${r.tests?.map(t => `${t.testName} ${t.value} ${t.unit} (${t.status})`).join(", ")}`;
+      if (r.documentType === "radiology")
+        return `Radiology: ${r.studyInfo?.studyType} - ${r.studyInfo?.bodyPart}`;
+    }).filter(Boolean).join("\n");
+
+    const Groq = require("groq-sdk");
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+    const response = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 200,
+      temperature: 0.5,
+      messages: [{
+        role: "user",
+        content: `Based on this patient's medical records, generate exactly 4 short, specific questions the patient should ask about their own health. Make them specific to the actual data, not generic.
+
+Records:
+${context}
+
+Respond ONLY with a valid JSON array of 4 strings, no explanation, no markdown:
+["question 1","question 2","question 3","question 4"]`,
+      }],
+    });
+
+    let questions = [];
+    try {
+      const raw = response.choices[0].message.content.trim();
+      questions = JSON.parse(raw);
+    } catch {
+      questions = ["What medications am I on?", "Any abnormal test results?", "What was my last diagnosis?", "Should I be concerned about anything?"];
+    }
+
+    res.json({ success: true, questions });
+  } catch (err) {
+    console.error("Suggested questions error:", err);
+    res.status(500).json({ error: "Failed to generate questions" });
+  }
+});
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
