@@ -533,6 +533,19 @@ ${context || "No records found."}`;
 
     res.json({ success: true, answer });
   } catch (err) {
+    const isRateLimit =
+      err?.status === 429 ||
+      err?.response?.status === 429 ||
+      err?.message?.includes("429");
+
+    if (isRateLimit) {
+      return res.status(429).json({
+        success: false,
+        message: "Too many requests. Please wait before asking again.",
+        retryAfter: 30, // chat is lighter → shorter wait
+      });
+    }
+
     console.error("Second opinion error:", err);
     res.status(500).json({ error: "Failed to get second opinion" });
   }
@@ -789,18 +802,55 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
       // return res.send(ocrText);
 
         // return;
-        const result = await analyzePrescription(processedImage, mimeType,  ocrText);
+        // const result = await analyzePrescription(processedImage, mimeType,  ocrText);
 
-        // console.log("result from prescription ;;;;;", result);
+        // // console.log("result from prescription ;;;;;", result);
 
-        return {
-          result,
-          // imagePath: `/uploads/${req.user.id}/${fileName}`,
-          imagePath: imageUrl,
-          imageBuffer,
-        };
+        // return {
+        //   result,
+        //   // imagePath: `/uploads/${req.user.id}/${fileName}`,
+        //   imagePath: imageUrl,
+        //   imageBuffer,
+        // };
+
+        try {
+          const result = await analyzePrescription(processedImage, mimeType, ocrText);
+
+          return {
+            result,
+            imagePath: imageUrl,
+            imageBuffer,
+          };
+
+        } catch (err) {
+          const isRateLimit =
+            err?.status === 429 ||
+            err?.response?.status === 429 ||
+            err?.message?.includes("429");
+
+          if (isRateLimit) {
+            return {
+              error: true,
+              type: "RATE_LIMIT",
+              message: "Rate limit reached. Please try again after a few seconds.",
+              retryAfter: 60 // seconds (you can tune this)
+            };
+          }
+
+          throw err;
+        }
       })
     );
+
+    const rateLimitError = scanResults.find(r => r?.error);
+
+    if (rateLimitError) {
+      return res.status(429).json({
+        success: false,
+        message: rateLimitError.message,
+        retryAfter: rateLimitError.retryAfter || 60,
+      });
+    }
 
     // After mergeResults...
     // const merged = mergeResults(scanResults.map(s => s.result));
@@ -808,57 +858,57 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     const imagePaths = scanResults.map(s => s.imagePath);
 
     // Save one record per page
-const savedRecords = await Promise.all(
-  scanResults.map(async (scanResult, index) => {
-    const result = scanResult.result;
+  const savedRecords = await Promise.all(
+    scanResults.map(async (scanResult, index) => {
+      const result = scanResult.result;
 
-    const dbData = {
-      user:            req.user.id,
-      documentType:    result.documentType,
-      imagePaths:      [scanResult.imagePath],
-      imagePath:       scanResult.imagePath,
-      pageCount:       1,
-      patientInfo:     result.patientInfo,
-      additionalNotes: result.additionalNotes,
-      confidence:      result.confidence,
-      warnings:        result.warnings,
-      advice:        result.advice,
-      meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
-      patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
-    };
+      const dbData = {
+        user:            req.user.id,
+        documentType:    result.documentType,
+        imagePaths:      [scanResult.imagePath],
+        imagePath:       scanResult.imagePath,
+        pageCount:       1,
+        patientInfo:     result.patientInfo,
+        additionalNotes: result.additionalNotes,
+        confidence:      result.confidence,
+        warnings:        result.warnings,
+        advice:        result.advice,
+        meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
+        patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
+      };
 
-    // Add type-specific fields
-    if (result.documentType === "prescription") {
-      dbData.doctorInfo  = result.doctorInfo;
-      dbData.medications = result.medications;
-      dbData.diagnosis   = result.diagnosis;
-      dbData.symptoms   = result.symptoms;
-      dbData.followUpDate   = result.followUpDate;
-    }
+      // Add type-specific fields
+      if (result.documentType === "prescription") {
+        dbData.doctorInfo  = result.doctorInfo;
+        dbData.medications = result.medications;
+        dbData.diagnosis   = result.diagnosis;
+        dbData.symptoms   = result.symptoms;
+        dbData.followUpDate   = result.followUpDate;
+      }
 
-    if (result.documentType === "lab_test") {
-      dbData.labInfo        = result.labInfo;
-      // dbData.tests          = result.tests;
-      dbData.tests          = (result.tests || []).map(test => ({
-        ...test,
-        status: sanitizeTestStatus(test.status),   // ← sanitized
-      }));
-      dbData.summary        = result.summary;
-      dbData.criticalValues = result.criticalValues;
-    }
+      if (result.documentType === "lab_test") {
+        dbData.labInfo        = result.labInfo;
+        // dbData.tests          = result.tests;
+        dbData.tests          = (result.tests || []).map(test => ({
+          ...test,
+          status: sanitizeTestStatus(test.status),   // ← sanitized
+        }));
+        dbData.summary        = result.summary;
+        dbData.criticalValues = result.criticalValues;
+      }
 
-    if (result.documentType === "radiology") {
-      dbData.studyInfo       = result.studyInfo;
-      dbData.findings        = result.findings;
-      dbData.impression      = result.impression;
-      dbData.recommendations = result.recommendations;
-    }
+      if (result.documentType === "radiology") {
+        dbData.studyInfo       = result.studyInfo;
+        dbData.findings        = result.findings;
+        dbData.impression      = result.impression;
+        dbData.recommendations = result.recommendations;
+      }
 
-    return Prescription.create(dbData);
-  })
-);
+      return Prescription.create(dbData);
+    })
+  );
 
-const merged = mergeResults(scanResults.map(s => s.result));
+  const merged = mergeResults(scanResults.map(s => s.result));
 
     res.json({
       success: true,
