@@ -75,4 +75,19 @@ router.delete("/:id", authMiddleware, async (req, res) => {
   }
 });
 
+router.put("/api/family/:id", authMiddleware, async (req, res) => {
+  try {
+    const { name, relation } = req.body;
+    const member = await FamilyMember.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { name, relation },
+      { new: true }
+    );
+    if (!member) return res.status(404).json({ error: "Member not found" });
+    res.json({ success: true, data: member });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update member" });
+  }
+});
+
 module.exports = router;
