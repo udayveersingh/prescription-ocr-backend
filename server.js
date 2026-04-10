@@ -469,10 +469,10 @@ app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) =>
     // ── Fetch all records for context ──
     const query = { user: req.user.id };
     if (familyMemberId) query.familyMember = familyMemberId;
-    const records = await Prescription.find(query).sort({ createdAt: -1 });
+    const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10); 
 
     // ── Build medical context from records ──
-    const context = records.map(r => {
+    const context = records.map(r => {                                          
       if (r.documentType === "prescription") {
         return `
 Prescription (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
@@ -869,7 +869,8 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         imagePath:       scanResult.imagePath,
         pageCount:       1,
         patientInfo:     result.patientInfo,
-        additionalNotes: result.additionalNotes,
+        // additionalNotes: result.additionalNotes,
+        additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : result.additionalNotes,
         confidence:      result.confidence,
         warnings:        result.warnings,
         advice:        result.advice,
