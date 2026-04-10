@@ -14,6 +14,7 @@ router.get("/", authMiddleware, async (req, res) => {
         const count = await Prescription.countDocuments({
           user: req.user.id,
           familyMember: m._id,
+          archived: { $ne: true }
         });
         return { ...m.toObject(), scanCount: count };
       })

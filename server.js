@@ -143,7 +143,7 @@ app.use("/api/auth", authRoutes);
 app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
   try {
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, archived: { $ne: true } };
 
     if (req.query.familyMemberId) {
       query.familyMember = req.query.familyMemberId;
@@ -392,7 +392,7 @@ const uploadToCloudinary = (buffer) => {
 
 app.get("/api/prescription/summary", authMiddleware, async (req, res) => {
   try {
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, archived: { $ne: true } };
     if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
 
     const records = await Prescription.find(query).sort({ createdAt: -1 });
@@ -467,7 +467,7 @@ app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) =>
     const { question, familyMemberId, chatHistory = [] } = req.body;
 
     // ── Fetch all records for context ──
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, archived: { $ne: true } };
     if (familyMemberId) query.familyMember = familyMemberId;
     const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10); 
 
@@ -553,7 +553,7 @@ ${context || "No records found."}`;
 
 app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
   try {
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, archived: { $ne: true } };
     if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
 
     const records = await Prescription.find(query).sort({ createdAt: -1 });
@@ -689,6 +689,20 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 }
 
+// ── Get archived records ──
+app.get("/api/prescription/archived", authMiddleware, async (req, res) => {
+  try {
+    console.log("fetching archived records for user", req.user.id, "familyMemberId:", req.query.familyMemberId);
+    const query = { user: req.user.id, archived: true };
+    if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
+    const records = await Prescription.find(query).sort({ archivedAt: -1 });
+    res.json({ success: true, data: records });
+  } catch (err) {
+    console.log("error coming ;;;;;", err);
+    res.status(500).json({ error: err.message, description: "Failed to fetch archived" });
+  }
+});
+
 app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
   try {
     const record = await Prescription.findOne({ _id: req.params.id, user: req.user.id });
@@ -701,7 +715,7 @@ app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
 
 app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
   try {
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, archived: { $ne: true } };
     if (req.body.familyMemberId) query.familyMember = req.body.familyMemberId;
 
     const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10);
@@ -926,6 +940,24 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ── Archive / Unarchive ──
+app.patch("/api/prescription/:id/archive", authMiddleware, async (req, res) => {
+  try {
+    const { archive } = req.body; // true = archive, false = unarchive
+    const record = await Prescription.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { archived: archive, archivedAt: archive ? new Date() : null },
+      { new: true }
+    );
+    if (!record) return res.status(404).json({ error: "Not found" });
+    res.json({ success: true, data: record });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update" });
+  }
+});
+
+
 
 // Health check
 app.get("/health", (req, res) => res.json({ status: "ok", version: "1.0.0" }));

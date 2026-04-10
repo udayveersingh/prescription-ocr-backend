@@ -118,6 +118,15 @@ const prescriptionSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Add this field to prescriptionSchema
+    archived: {
+      type: Boolean,
+      default: false,
+    },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }  // adds createdAt + updatedAt automatically
 );

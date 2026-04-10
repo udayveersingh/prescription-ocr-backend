@@ -79,7 +79,7 @@ router.post("/generate", authMiddleware, async (req, res) => {
     }
 
     // Build query
-    const query = { user: req.user.id };
+    const query = { user: req.user.id, archived: { $ne: true } };
     query.familyMember = familyMemberId || null;
 
     const prescriptions = await Prescription.find(query).sort({ patientParsedDate: -1 });
