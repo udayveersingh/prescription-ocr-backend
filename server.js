@@ -713,6 +713,21 @@ app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
   }
 });
 
+app.patch("/api/prescription/:id/transfer", authMiddleware, async (req, res) => {
+  try {
+    const { familyMemberId } = req.body;
+    const record = await Prescription.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { familyMember: familyMemberId || null },
+      { new: true }
+    );
+    if (!record) return res.status(404).json({ error: "Not found" });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to transfer" });
+  }
+});
+
 app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
   try {
     const query = { user: req.user.id, archived: { $ne: true } };
