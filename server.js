@@ -673,9 +673,57 @@ If no numeric metrics found, respond with: []`,
       trends = [];
     }
 
+    // ── Detailed summary (3 pillars) ──
+    const detailedRes = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 500,
+      temperature: 0.3,
+      messages: [{
+        role: "user",
+        content: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+
+    Records:
+    ${recordsSummary || "No records"}
+
+    Respond ONLY with valid JSON, no markdown:
+    {
+      "activeFocus": "1-2 sentences about most recent/active health episode with specific values",
+      "chronicManagement": "1-2 sentences about ongoing chronic conditions and medications",
+      "generalOutlook": "1-2 sentences about overall health status with any measurable trends"
+    }`,
+      }],
+    });
+
+    let detailedSummary = {};
+    try {
+      detailedSummary = JSON.parse(detailedRes.choices[0].message.content.trim());
+    } catch { detailedSummary = {}; }
+
+    // ── Extract structured data ──
+    const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(0, 5);
+
+    const activeMeds = records
+      .filter(r => r.documentType === "prescription")
+      .flatMap(r => r.medications?.map((m) => ({
+        name: m.name,
+        frequency: m.frequency,
+        doctor: r.doctorInfo?.name,
+      })) || [])
+      .slice(0, 5);
+
+    const latestLabs = records
+      .filter(r => r.documentType === "lab_test")
+      .flatMap(r => r.tests?.map((t) => ({
+        testName: t.testName,
+        value: t.value,
+        unit: t.unit,
+        status: t.status,
+      })) || [])
+      .slice(0, 5);
+
     res.json({
       success: true,
-      data: { totalRecords: records.length, aiSummary, trends, documents }
+      data: { totalRecords: records.length, aiSummary, detailedSummary, chronicConditions, activeMeds,   latestLabs,   trends, documents }
     });
 
   } catch (err) {
