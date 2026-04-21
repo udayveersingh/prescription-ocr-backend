@@ -6,6 +6,7 @@
  */
 
 require("dotenv").config();
+const { GoogleGenAI } = require("@google/genai");
 
 const AI_PROVIDER = process.env.AI_PROVIDER || "groq";
 
@@ -426,7 +427,12 @@ async function analyzeWithGroq(imageBuffer, mimeType, prompt = PRESCRIPTION_PROM
     model: "meta-llama/llama-4-scout-17b-16e-instruct",
     max_tokens: 2000,
     temperature: 0.1,
-    messages: [{
+    messages: [
+      {
+        role: "system",
+        content: "You are a medical document analyzer. You MUST respond with ONLY valid JSON. No explanations, no markdown, no conversation. Just the JSON object.",
+      },
+      {
       role: "user",
       content: [
         { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
@@ -434,6 +440,33 @@ async function analyzeWithGroq(imageBuffer, mimeType, prompt = PRESCRIPTION_PROM
       ],
     }],
   });
+
+   const content = response.choices[0].message.content;
+
+   // ← If still conversational, retry with text-only forcing JSON
+  if (!content.trim().startsWith("{") && !content.includes("{")) {
+    console.warn("AI gave non-JSON response, retrying with stricter prompt...");
+    const retry = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      max_tokens: 2000,
+      temperature: 0.1,
+      messages: [
+        {
+          role: "system",
+          content: "You are a medical document analyzer. You MUST respond with ONLY valid JSON. No explanations, no markdown, no conversation. Just the JSON object.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+            { type: "text", text: prompt + "\n\nIMPORTANT: Respond with ONLY the JSON object. Start your response with { and end with }. No other text." },
+          ],
+        },
+      ],
+    });
+    return parseAIResponse(retry.choices[0].message.content);
+  }
+
   return parseAIResponse(response.choices[0].message.content);
 }
 
@@ -520,11 +553,51 @@ function parseAIResponse(text) {
       try {
         return JSON.parse(match[0]);
       } catch (e2) {
-        throw new Error("Could not parse AI response as JSON");
+        // throw new Error("Could not parse AI response as JSON");
+          // Try to find the largest valid JSON object
+        const matches = text.match(/\{[\s\S]*?\}/g);
+        if (matches) {
+          for (const m of matches.sort((a, b) => b.length - a.length)) {
+            try { return JSON.parse(m); } catch {}
+          }
+        }
       }
     }
     throw new Error("AI returned non-JSON response: " + text.slice(0, 200));
   }
+}
+
+// ── Analyze text-only (for PDFs) ──
+async function analyzeTextOnly(text) {
+  const Groq = require("groq-sdk");
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+  const response = await groq.chat.completions.create({
+    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    max_tokens: 2000,
+    temperature: 0.1,
+    messages: [
+      {
+        role: "system",
+        content: "You are a medical document analyzer. Respond with ONLY valid JSON. No explanations, no markdown.",
+      },
+      {
+        role: "user",
+        content: `Analyze this medical document and extract all information into JSON format.
+
+${SMART_PROMPT}
+
+DOCUMENT TEXT:
+"""
+${text}
+"""
+
+Respond with ONLY the JSON object starting with { and ending with }.`,
+      },
+    ],
+  });
+
+  return parseAIResponse(response.choices[0].message.content);
 }
 
 // ── Main Export ──────────────────────────────────────────────
@@ -582,4 +655,4 @@ async function analyzeWithPrompt(imageBuffer, mimeType, prompt) {
   }
 }
 
-module.exports = { analyzePrescription: analyzeDocument };
+module.exports = { analyzePrescription: analyzeDocument, analyzeTextOnly };

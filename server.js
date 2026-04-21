@@ -4,7 +4,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { processImage, extractTextFromImage } = require("./services/ocrService");
-const { analyzePrescription } = require("./services/aiService");
+const { analyzePrescription, analyzeTextOnly } = require("./services/aiService");
 const { validateImage } = require("./middleware/validateImage");
 const Prescription = require("./models/Prescription");
 const authMiddleware = require("./middleware/authMiddleware");
@@ -173,19 +173,85 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 
 });
 
+// app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
+//   try {
+//     const prescription = await Prescription.findOneAndDelete({
+//       _id: req.params.id,
+//       user: req.user.id, // ← ensures user can only delete their own
+//     });
+
+//     if (!prescription) {
+//       return res.status(404).json({ error: "Record not found" });
+//     }
+
+//     res.json({ success: true, message: "Record deleted" });
+//   } catch (err) {
+//     res.status(500).json({ error: "Failed to delete record" });
+//   }
+// });
+
+
 app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
   try {
-    const prescription = await Prescription.findOneAndDelete({
+    const prescription = await Prescription.findOne({
       _id: req.params.id,
-      user: req.user.id, // ← ensures user can only delete their own
+      user: req.user.id,
     });
 
     if (!prescription) {
       return res.status(404).json({ error: "Record not found" });
     }
 
-    res.json({ success: true, message: "Record deleted" });
+    // ── Delete files from Cloudinary ──
+    const allImagePaths = prescription.imagePaths || 
+                         (prescription.imagePath ? [prescription.imagePath] : []);
+
+    await Promise.allSettled(
+      allImagePaths.map(async (url) => {
+        try {
+          // Extract public_id from Cloudinary URL
+          // URL format: https://res.cloudinary.com/{cloud}/image/upload/v123/{folder}/{public_id}.ext
+          // OR for raw:  https://res.cloudinary.com/{cloud}/raw/upload/v123/{folder}/{public_id}
+          
+          const isRaw = url.includes("/raw/upload/");
+          const resourceType = isRaw ? "raw" : "image";
+
+          // Extract everything after /upload/v{version}/ or /upload/
+          const uploadIndex = url.indexOf("/upload/");
+          if (uploadIndex === -1) return;
+
+          let publicIdWithExt = url.substring(uploadIndex + 8); // skip "/upload/"
+          
+          // Remove version segment if present (v1234567890/)
+          publicIdWithExt = publicIdWithExt.replace(/^v\d+\//, "");
+          
+          // Remove file extension for images (keep for raw/pdf)
+          const publicId = isRaw 
+            ? publicIdWithExt 
+            : publicIdWithExt.replace(/\.[^/.]+$/, "");
+
+          console.log(`🗑️ Deleting from Cloudinary: ${publicId} (${resourceType})`);
+
+          await cloudinary.uploader.destroy(publicId, { 
+            resource_type: resourceType 
+          });
+
+        } catch (err) {
+          console.error("Cloudinary delete error for URL:", url, err);
+        }
+      })
+    );
+
+    // ── Delete from DB ──
+    await Prescription.findOneAndDelete({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+
+    res.json({ success: true, message: "Record and files deleted" });
+
   } catch (err) {
+    console.error("Delete error:", err);
     res.status(500).json({ error: "Failed to delete record" });
   }
 });
@@ -834,15 +900,89 @@ Respond ONLY with a valid JSON array of 4 strings, no explanation, no markdown:
   }
 });
 
+async function extractTextFromPdf(pdfBuffer) {
+  const pdfjsLib = require("pdfjs-dist/build/pdf.js");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(pdfBuffer),
+    disableFontFace: true,
+    useWorkerFetch: false,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+
+  const pdfDoc = await loadingTask.promise;
+  let fullText = "";
+
+  for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+    const page = await pdfDoc.getPage(pageNum);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items.map(item => item.str).join(" ");
+    fullText += `\n--- Page ${pageNum} ---\n${pageText}`;
+  }
+
+  return fullText.trim();
+}
+
 app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
   req.startTime = Date.now();
   try {
     // Support both single image and array of images
-    const { image, images, mimeType = "image/jpeg" } = req.body;
+    const { image, images, mimeType = "image/jpeg", pdfs } = req.body;
 
     // Normalize to array
-    const imageList = images || (image ? [image] : null);
-    if (!imageList || imageList.length === 0) {
+    let imageList = images || (image ? [image] : null);
+
+    // ── Handle PDFs via text extraction (no image rendering) ──
+    let pdfScanResults = [];
+    if (pdfs && pdfs.length > 0) {
+      if (pdfs.length > 2) {
+        return res.status(400).json({ error: "Maximum 2 PDFs allowed per scan" });
+      }
+
+      pdfScanResults = await Promise.all(
+        pdfs.map(async (base64Pdf) => {
+          console.log("Received PDF base64 length:", base64Pdf?.length);
+          console.log("First 50 chars:", base64Pdf?.substring(0, 50));
+          const pdfBuffer = Buffer.from(base64Pdf, "base64");
+
+          // Add this validation
+          console.log("PDF buffer size:", pdfBuffer.length);
+          if (pdfBuffer.length < 1000) {
+            throw new Error("PDF buffer too small — base64 decode likely failed");
+          }
+
+          // Upload PDF to Cloudinary
+          const uploadResult = await new Promise((resolve, reject) => {
+            const uniqueName = `pdf_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            cloudinary.uploader.upload_stream(
+              { 
+                folder: "prescriptions", 
+                resource_type: "raw",
+                public_id: uniqueName,
+                format: "pdf",                          // ← force PDF format
+                type: "upload",
+              },
+              (error, result) => error ? reject(error) : resolve(result)
+            ).end(pdfBuffer);
+          });
+          const pdfUrl = uploadResult.secure_url;
+
+          // Extract text from PDF
+          const pdfText = await extractTextFromPdf(pdfBuffer);
+          console.log("📄 PDF text extracted, length:", pdfText.length);
+
+          // Analyze text only (no image)
+          const result = await analyzeTextOnly(pdfText);
+          return { result, imagePath: pdfUrl };
+        })
+      );
+    }
+
+    // if (!imageList || imageList.length === 0) {
+    if (imageList.length === 0 && pdfScanResults.length === 0) {
       return res.status(400).json({ error: "At least one image is required" });
     }
     if (imageList.length > 5) {
@@ -933,10 +1073,14 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     // const merged = mergeResults(scanResults.map(s => s.result));
     // console.log("merge result coming ;;;;;", merged);
     const imagePaths = scanResults.map(s => s.imagePath);
-
     // Save one record per page
+
+    // const merged = mergeResults(scanResults.map(s => s.result));
+    const allScanResults = [...scanResults, ...pdfScanResults];
+    const merged = mergeResults(allScanResults.map(s => s.result));
+
   const savedRecords = await Promise.all(
-    scanResults.map(async (scanResult, index) => {
+    allScanResults.map(async (scanResult, index) => {
       const result = scanResult.result;
 
       const dbData = {
@@ -950,7 +1094,8 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : result.additionalNotes,
         confidence:      result.confidence,
         warnings:        result.warnings,
-        advice:        result.advice,
+        // advice:        result.advice,
+        advice:        Array.isArray(result.advice) ? result.advice.join(". ") : result.advice,
         meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
         patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
       };
@@ -986,18 +1131,15 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     })
   );
 
-  const merged = mergeResults(scanResults.map(s => s.result));
-
     res.json({
       success: true,
       data: merged,
-      pageCount: imageList.length,
+      pageCount: allScanResults.length,
       meta: { processingTime: Date.now() - req.startTime },
       savedIds:  savedRecords.map(r => r._id), 
-       pageResults: scanResults.map(s => s.result),
+       pageResults: allScanResults.map(s => s.result),
       // savedId: prescription._id
     });
-
   } catch (err) {
     console.error("Scan error:", err);
     res.status(500).json({ success: false, error: err.message });
