@@ -18,6 +18,9 @@ const path = require("path");
 const { parsePatientDateString } = require("./utils/utils");
 const HealthQR = require("./models/HealthQR");
 const cloudinary = require("cloudinary").v2;
+const { GoogleGenAI, Type } = require("@google/genai");
+// Initialize Gemini SDK
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -528,6 +531,277 @@ Write the summary now:`,
 });
 
 
+// app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) => {
+//   try {
+//     const { question, familyMemberId, chatHistory = [] } = req.body;
+
+//     // ── Fetch all records for context ──
+//     const query = { user: req.user.id, archived: { $ne: true } };
+//     if (familyMemberId) query.familyMember = familyMemberId;
+//     const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10); 
+
+//     // ── Build medical context from records ──
+//     const context = records.map(r => {                                          
+//       if (r.documentType === "prescription") {
+//         return `
+// Prescription (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
+// - Patient: ${r.patientInfo?.name || "Unknown"}
+// - Doctor: ${r.doctorInfo?.name || "Unknown"} (${r.doctorInfo?.specialization || ""})
+// - Diagnosis: ${r.diagnosis || "Not mentioned"}
+// - Symptoms: ${r.symptoms?.join(", ") || "None"}
+// - Medications: ${r.medications?.map(m => `${m.name} ${m.dosage || ""} ${m.frequency || ""}`).join(", ") || "None"}
+// - Notes: ${r.additionalNotes || "None"}
+//         `.trim();
+//       }
+//       if (r.documentType === "lab_test") {
+//         return `
+// Lab Test (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
+// - Tests: ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit} (${t.status})`).join(", ") || "None"}
+// - Critical Values: ${r.criticalValues?.join(", ") || "None"}
+// - Summary: ${r.summary || "None"}
+//         `.trim();
+//       }
+//       if (r.documentType === "radiology") {
+//         return `
+// Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
+// - Study: ${r.studyInfo?.studyType} - ${r.studyInfo?.bodyPart}
+// - Findings: ${r.findings || "None"}
+// - Impression: ${r.impression || "None"}
+//         `.trim();
+//       }
+//     }).filter(Boolean).join("\n\n");
+
+//     const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below. 
+// Always be clear, friendly, and easy to understand for a non-medical person.
+// Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
+// If the answer is not in the records, say "I don't see this in your records."
+
+// PATIENT MEDICAL RECORDS:
+// ${context || "No records found."}`;
+
+//     // ── Build messages with chat history ──
+//     const Groq = require("groq-sdk");
+//     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+//     const messages = [
+//       ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
+//       { role: "user", content: question },
+//     ];
+
+//     const response = await groq.chat.completions.create({
+//       model: "meta-llama/llama-4-scout-17b-16e-instruct",
+//       max_tokens: 500,
+//       temperature: 0.3,
+//       messages: [
+//         { role: "system", content: systemPrompt },
+//         ...messages,
+//       ],
+//     });
+
+//     const answer = response.choices[0].message.content;
+
+//     res.json({ success: true, answer });
+//   } catch (err) {
+//     const isRateLimit =
+//       err?.status === 429 ||
+//       err?.response?.status === 429 ||
+//       err?.message?.includes("429");
+
+//     if (isRateLimit) {
+//       return res.status(429).json({
+//         success: false,
+//         message: "Too many requests. Please wait before asking again.",
+//         retryAfter: 30, // chat is lighter → shorter wait
+//       });
+//     }
+
+//     console.error("Second opinion error:", err);
+//     res.status(500).json({ error: "Failed to get second opinion" });
+//   }
+// });
+
+// app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
+//   try {
+//     const query = { user: req.user.id, archived: { $ne: true } };
+//     if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
+
+//     const records = await Prescription.find(query).sort({ createdAt: -1 });
+
+//     // ── Documents list ──
+//     const documents = records.map(r => {
+//       if (r.documentType === "prescription") {
+//         const firstMed = r.medications?.[0];
+//         return {
+//           _id: r._id, type: "prescription", icon: "pill",
+//           title: firstMed ? `${firstMed.name}${firstMed.frequency ? " — " + firstMed.frequency : ""}` : "Prescription",
+//           subtitle: `${r.patientInfo?.date ? formatDate(r.patientInfo.date) : formatDate(r.createdAt)} · ${r.doctorInfo?.name || ""}`,
+//           tag: r.followUpDate ? `Refill ${formatDate(r.followUpDate)}` : null,
+//           tagColor: "#e8f5e9", tagTextColor: "#2e7d32", createdAt: r.createdAt,
+//         };
+//       }
+//       if (r.documentType === "lab_test") {
+//         const allNormal = r.tests?.every(t => t.status === "normal");
+//         const critical  = r.tests?.some(t => t.status === "critical");
+//         const firstTest = r.tests?.[0];
+//         return {
+//           _id: r._id, type: "lab_test", icon: "flask",
+//           title: firstTest?.testName || r.labInfo?.labName || "Lab Report",
+//           subtitle: `${formatDate(r.createdAt)} · ${r.labInfo?.labName || ""}`,
+//           tag: critical ? "Critical ⚠️" : allNormal ? "All normal ✓" : "Review needed",
+//           tagColor: critical ? "#fef2f2" : allNormal ? "#f1f8e9" : "#fffde7",
+//           tagTextColor: critical ? "#c62828" : allNormal ? "#388e3c" : "#f57f17",
+//           createdAt: r.createdAt,
+//         };
+//       }
+//       if (r.documentType === "radiology") {
+//         return {
+//           _id: r._id, type: "radiology", icon: "scan",
+//           title: `${r.studyInfo?.studyType || "Radiology"} — ${r.studyInfo?.bodyPart || ""}`,
+//           subtitle: formatDate(r.createdAt), tag: null, createdAt: r.createdAt,
+//         };
+//       }
+//       return null;
+//     }).filter(Boolean);
+
+//     // ── Build context for AI ──
+//     const medications   = [];
+//     const diagnoses     = [];
+//     const warnings      = [];
+//     const abnormalTests = [];
+
+//     records.forEach(r => {
+//       if (r.documentType === "prescription") {
+//         r.medications?.forEach(m => { if (m.name) medications.push(m.name); });
+//         if (r.diagnosis) diagnoses.push(r.diagnosis);
+//         r.warnings?.forEach(w => warnings.push(w));
+//       }
+//       if (r.documentType === "lab_test") {
+//         r.tests?.filter(t => t.status !== "normal").forEach(t => abnormalTests.push(`${t.testName} (${t.status})`));
+//         r.criticalValues?.forEach(v => warnings.push(v));
+//       }
+//     });
+
+//     const Groq = require("groq-sdk");
+//     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+//     // ── AI Health Summary ──
+//     const summaryRes = await groq.chat.completions.create({
+//       model: "meta-llama/llama-4-scout-17b-16e-instruct",
+//       max_tokens: 200,
+//       temperature: 0.3,
+//       messages: [{
+//         role: "user",
+//         content: `You are a medical assistant. Write a 2-sentence friendly health summary based on:
+// - Medications: ${medications.join(", ") || "None"}
+// - Diagnoses: ${diagnoses.join(", ") || "None"}
+// - Abnormal Tests: ${abnormalTests.join(", ") || "None"}
+// - Warnings: ${warnings.join(", ") || "None"}
+// - Total Records: ${records.length}
+// Be concise and simple. Do not give medical advice.`,
+//       }],
+//     });
+//     const aiSummary = summaryRes.choices[0].message.content || "";
+
+//     // ── AI Health Trends (dynamic, based on actual records) ──
+//     const recordsSummary = records.map(r => {
+//       if (r.documentType === "lab_test") {
+//         return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
+//       }
+//       if (r.documentType === "prescription") {
+//         return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map(m => m.name).join(", ")}`;
+//       }
+//       if (r.documentType === "radiology") {
+//         return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
+//       }
+//     }).filter(Boolean).join("\n");
+
+//     const trendsRes = await groq.chat.completions.create({
+//       model: "meta-llama/llama-4-scout-17b-16e-instruct",
+//       max_tokens: 400,
+//       temperature: 0.1,
+//       messages: [{
+//         role: "user",
+//         content: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
+// Only include metrics that actually have numeric values in the records.
+
+// Records:
+// ${recordsSummary || "No records"}
+
+// Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
+// [{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
+
+// If no numeric metrics found, respond with: []`,
+//       }],
+//     });
+
+//     let trends = [];
+//     try {
+//       const raw = trendsRes.choices[0].message.content.trim();
+//       trends = JSON.parse(raw);
+//     } catch {
+//       trends = [];
+//     }
+
+//     // ── Detailed summary (3 pillars) ──
+//     const detailedRes = await groq.chat.completions.create({
+//       model: "meta-llama/llama-4-scout-17b-16e-instruct",
+//       max_tokens: 500,
+//       temperature: 0.3,
+//       messages: [{
+//         role: "user",
+//         content: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+
+//     Records:
+//     ${recordsSummary || "No records"}
+
+//     Respond ONLY with valid JSON, no markdown:
+//     {
+//       "activeFocus": "1-2 sentences about most recent/active health episode with specific values",
+//       "chronicManagement": "1-2 sentences about ongoing chronic conditions and medications",
+//       "generalOutlook": "1-2 sentences about overall health status with any measurable trends"
+//     }`,
+//       }],
+//     });
+
+//     let detailedSummary = {};
+//     try {
+//       detailedSummary = JSON.parse(detailedRes.choices[0].message.content.trim());
+//     } catch { detailedSummary = {}; }
+
+//     // ── Extract structured data ──
+//     const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(0, 5);
+
+//     const activeMeds = records
+//       .filter(r => r.documentType === "prescription")
+//       .flatMap(r => r.medications?.map((m) => ({
+//         name: m.name,
+//         frequency: m.frequency,
+//         doctor: r.doctorInfo?.name,
+//       })) || [])
+//       .slice(0, 5);
+
+//     const latestLabs = records
+//       .filter(r => r.documentType === "lab_test")
+//       .flatMap(r => r.tests?.map((t) => ({
+//         testName: t.testName,
+//         value: t.value,
+//         unit: t.unit,
+//         status: t.status,
+//       })) || [])
+//       .slice(0, 5);
+
+//     res.json({
+//       success: true,
+//       data: { totalRecords: records.length, aiSummary, detailedSummary, chronicConditions, activeMeds,   latestLabs,   trends, documents }
+//     });
+
+//   } catch (err) {
+//     console.error("Member profile error:", err);
+//     res.status(500).json({ error: "Failed to load profile" });
+//   }
+// });
+
+
 app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) => {
   try {
     const { question, familyMemberId, chatHistory = [] } = req.body;
@@ -553,7 +827,7 @@ Prescription (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
       if (r.documentType === "lab_test") {
         return `
 Lab Test (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
-- Tests: ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit} (${t.status})`).join(", ") || "None"}
+- Tests: ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status || "normal"})`).join(", ") || "None"}
 - Critical Values: ${r.criticalValues?.join(", ") || "None"}
 - Summary: ${r.summary || "None"}
         `.trim();
@@ -561,7 +835,7 @@ Lab Test (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
       if (r.documentType === "radiology") {
         return `
 Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
-- Study: ${r.studyInfo?.studyType} - ${r.studyInfo?.bodyPart}
+- Study: ${r.studyInfo?.studyType || "Scan"} - ${r.studyInfo?.bodyPart || ""}
 - Findings: ${r.findings || "None"}
 - Impression: ${r.impression || "None"}
         `.trim();
@@ -576,46 +850,55 @@ If the answer is not in the records, say "I don't see this in your records."
 PATIENT MEDICAL RECORDS:
 ${context || "No records found."}`;
 
-    // ── Build messages with chat history ──
-    const Groq = require("groq-sdk");
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    // ── Map Groq/OpenAI chat history format to Gemini SDK specifications ──
+    // Groq uses { role: "user" | "assistant", content: "..." }
+    // Gemini contents array expects { role: "user" | "model", parts: [{ text: "..." }] }
+    const formattedContents = chatHistory.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }]
+    }));
 
-    const messages = [
-      ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
-      { role: "user", content: question },
-    ];
-
-    const response = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      max_tokens: 500,
-      temperature: 0.3,
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-      ],
+    // Append the current fresh user question to the timeline array
+    formattedContents.push({
+      role: "user",
+      parts: [{ text: question }]
     });
 
-    const answer = response.choices[0].message.content;
+    // ── Execute Chat Request with Gemini ──
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: formattedContents,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.3,
+        maxOutputTokens: 800, // 🧠 Expanded slightly to let thorough multi-line explanations breathe
+      }
+    });
+
+    const answer = response.text || "I was unable to evaluate your records at this time. Please consult your doctor for medical advice.";
 
     res.json({ success: true, answer });
   } catch (err) {
+    // ── Map Gemini Specific Rate Limiting Error Codes ──
     const isRateLimit =
       err?.status === 429 ||
       err?.response?.status === 429 ||
-      err?.message?.includes("429");
+      err?.message?.includes("429") ||
+      err?.message?.includes("RESOURCE_EXHAUSTED");
 
     if (isRateLimit) {
       return res.status(429).json({
         success: false,
         message: "Too many requests. Please wait before asking again.",
-        retryAfter: 30, // chat is lighter → shorter wait
+        retryAfter: 30,
       });
     }
 
     console.error("Second opinion error:", err);
     res.status(500).json({ error: "Failed to get second opinion" });
   }
-});
+}
+);
 
 app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
   try {
@@ -678,28 +961,46 @@ app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => 
       }
     });
 
-    const Groq = require("groq-sdk");
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-    // ── AI Health Summary ──
-    const summaryRes = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      max_tokens: 200,
-      temperature: 0.3,
-      messages: [{
-        role: "user",
-        content: `You are a medical assistant. Write a 2-sentence friendly health summary based on:
+    // ── AI Health Summary (Plain text response configuration) ──
+    let aiSummary = "";
+    try {
+      const summaryRes = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Review the following medical data summary:
 - Medications: ${medications.join(", ") || "None"}
 - Diagnoses: ${diagnoses.join(", ") || "None"}
 - Abnormal Tests: ${abnormalTests.join(", ") || "None"}
 - Warnings: ${warnings.join(", ") || "None"}
 - Total Records: ${records.length}
-Be concise and simple. Do not give medical advice.`,
-      }],
-    });
-    const aiSummary = summaryRes.choices[0].message.content || "";
 
-    // ── AI Health Trends (dynamic, based on actual records) ──
+Write a detailed, warm, and friendly patient health overview summary paragraph based ONLY on the data provided above. 
+Requirements:
+1. It MUST be exactly 3 to 4 complete sentences long.
+2. Provide a thorough summary of their active medications, any abnormal results, and next steps mentioned.
+3. Do NOT provide medical advice. 
+4. Output your response as standard, raw, plain text. Do NOT wrap it in JSON structure, do NOT use markdown, and do NOT use backticks.`,
+        config: {
+          systemInstruction: "You are a professional medical assistant writing an overview for a patient dashboard profile. Write exactly 3 to 4 long, complete, comprehensive sentences. Never stop writing mid-sentence or truncate the text.",
+          temperature: 0.5,
+          maxOutputTokens: 600, // 🧠 Significantly bumped to guarantee 3-4 full sentences fit with room to spare
+        },
+      });
+      
+      // Clean up the text response completely to bypass any broken parsing filters
+      if (summaryRes.text) {
+        aiSummary = summaryRes.text
+          .replace(/```json/gi, "")
+          .replace(/```/g, "")
+          .trim();
+      } else {
+        aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
+      }
+    } catch (err) {
+      console.error("Gemini summary prompt error:", err);
+      aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
+    }
+
+    // ── Format history maps for context ──
     const recordsSummary = records.map(r => {
       if (r.documentType === "lab_test") {
         return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
@@ -712,60 +1013,69 @@ Be concise and simple. Do not give medical advice.`,
       }
     }).filter(Boolean).join("\n");
 
-    const trendsRes = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      max_tokens: 400,
-      temperature: 0.1,
-      messages: [{
-        role: "user",
-        content: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
-Only include metrics that actually have numeric values in the records.
 
-Records:
-${recordsSummary || "No records"}
-
-Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
-[{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
-
-If no numeric metrics found, respond with: []`,
-      }],
-    });
-
+    // ── AI Health Trends (Enforced Strict JSON Schema) ──
     let trends = [];
     try {
-      const raw = trendsRes.choices[0].message.content.trim();
-      trends = JSON.parse(raw);
-    } catch {
+      const trendsRes = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards. Only include metrics that actually have numeric values in the records.\n\nRecords:\n${recordsSummary || "No records"}`,
+        config: {
+          temperature: 0.1,
+          maxOutputTokens: 400,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            description: "List of numeric metrics showing structural trends over time.",
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING, description: "Name of the metric e.g., Cholesterol, Hb, Platelet" },
+                latestValue: { type: Type.STRING },
+                unit: { type: Type.STRING },
+                trend: { type: Type.STRING, description: "Must be 'up' or 'down'" },
+                change: { type: Type.STRING, description: "Trend character followed by amount variant e.g. '↓ 12'" }
+              },
+              required: ["name", "latestValue", "unit", "trend", "change"]
+            }
+          }
+        }
+      });
+      trends = JSON.parse(trendsRes.text);
+    } catch (err) {
+      console.error("Gemini failed trends validation, returning default:", err);
       trends = [];
     }
 
-    // ── Detailed summary (3 pillars) ──
-    const detailedRes = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      max_tokens: 500,
-      temperature: 0.3,
-      messages: [{
-        role: "user",
-        content: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
 
-    Records:
-    ${recordsSummary || "No records"}
-
-    Respond ONLY with valid JSON, no markdown:
-    {
-      "activeFocus": "1-2 sentences about most recent/active health episode with specific values",
-      "chronicManagement": "1-2 sentences about ongoing chronic conditions and medications",
-      "generalOutlook": "1-2 sentences about overall health status with any measurable trends"
-    }`,
-      }],
-    });
-
-    let detailedSummary = {};
+    // ── Detailed summary (3 pillars Enforced Strict JSON Schema) ──
+    let detailedSummary = { activeFocus: "", chronicManagement: "", generalOutlook: "" };
     try {
-      detailedSummary = JSON.parse(detailedRes.choices[0].message.content.trim());
-    } catch { detailedSummary = {}; }
+      const detailedRes = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).\n\nRecords:\n${recordsSummary || "No records"}`,
+        config: {
+          temperature: 0.3,
+          maxOutputTokens: 500,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              activeFocus: { type: Type.STRING, description: "1-2 sentences about most recent/active health episode with specific values" },
+              chronicManagement: { type: Type.STRING, description: "1-2 sentences about ongoing chronic conditions and medications" },
+              generalOutlook: { type: Type.STRING, description: "1-2 sentences about overall health status with any measurable trends" }
+            },
+            required: ["activeFocus", "chronicManagement", "generalOutlook"]
+          }
+        }
+      });
+      detailedSummary = JSON.parse(detailedRes.text);
+    } catch (err) {
+      console.error("Gemini detailed summary structure failure:", err);
+    }
 
-    // ── Extract structured data ──
+
+    // ── Extract structural relational entities ──
     const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(0, 5);
 
     const activeMeds = records
@@ -789,7 +1099,7 @@ If no numeric metrics found, respond with: []`,
 
     res.json({
       success: true,
-      data: { totalRecords: records.length, aiSummary, detailedSummary, chronicConditions, activeMeds,   latestLabs,   trends, documents }
+      data: { totalRecords: records.length, aiSummary, detailedSummary, chronicConditions, activeMeds, latestLabs, trends, documents }
     });
 
   } catch (err) {
@@ -842,6 +1152,64 @@ app.patch("/api/prescription/:id/transfer", authMiddleware, async (req, res) => 
   }
 });
 
+// app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
+//   try {
+//     const query = { user: req.user.id, archived: { $ne: true } };
+//     if (req.body.familyMemberId) query.familyMember = req.body.familyMemberId;
+
+//     const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10);
+
+//     if (!records.length) {
+//       return res.json({
+//         success: true,
+//         questions: ["What should I know about my health?", "How can I improve my health?"]
+//       });
+//     }
+
+//     // ── Build context ──
+//     const context = records.map(r => {
+//       if (r.documentType === "prescription")
+//         return `Prescription: Meds: ${r.medications?.map(m => m.name).join(", ")}, Diagnosis: ${r.diagnosis || "unknown"}`;
+//       if (r.documentType === "lab_test")
+//         return `Lab Test: ${r.tests?.map(t => `${t.testName} ${t.value} ${t.unit} (${t.status})`).join(", ")}`;
+//       if (r.documentType === "radiology")
+//         return `Radiology: ${r.studyInfo?.studyType} - ${r.studyInfo?.bodyPart}`;
+//     }).filter(Boolean).join("\n");
+
+//     const Groq = require("groq-sdk");
+//     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+//     const response = await groq.chat.completions.create({
+//       model: "meta-llama/llama-4-scout-17b-16e-instruct",
+//       max_tokens: 200,
+//       temperature: 0.5,
+//       messages: [{
+//         role: "user",
+//         content: `Based on this patient's medical records, generate exactly 4 short, specific questions the patient should ask about their own health. Make them specific to the actual data, not generic.
+
+// Records:
+// ${context}
+
+// Respond ONLY with a valid JSON array of 4 strings, no explanation, no markdown:
+// ["question 1","question 2","question 3","question 4"]`,
+//       }],
+//     });
+
+//     let questions = [];
+//     try {
+//       const raw = response.choices[0].message.content.trim();
+//       questions = JSON.parse(raw);
+//     } catch {
+//       questions = ["What medications am I on?", "Any abnormal test results?", "What was my last diagnosis?", "Should I be concerned about anything?"];
+//     }
+
+//     res.json({ success: true, questions });
+//   } catch (err) {
+//     console.error("Suggested questions error:", err);
+//     res.status(500).json({ error: "Failed to generate questions" });
+//   }
+// });
+
 app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
   try {
     const query = { user: req.user.id, archived: { $ne: true } };
@@ -861,36 +1229,42 @@ app.post("/api/prescription/suggested-questions", authMiddleware, async (req, re
       if (r.documentType === "prescription")
         return `Prescription: Meds: ${r.medications?.map(m => m.name).join(", ")}, Diagnosis: ${r.diagnosis || "unknown"}`;
       if (r.documentType === "lab_test")
-        return `Lab Test: ${r.tests?.map(t => `${t.testName} ${t.value} ${t.unit} (${t.status})`).join(", ")}`;
+        return `Lab Test: ${r.tests?.map(t => `${t.testName} ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
       if (r.documentType === "radiology")
-        return `Radiology: ${r.studyInfo?.studyType} - ${r.studyInfo?.bodyPart}`;
+        return `Radiology: ${r.studyInfo?.studyType || "Scan"} - ${r.studyInfo?.bodyPart || ""}`;
     }).filter(Boolean).join("\n");
-
-    const Groq = require("groq-sdk");
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-    const response = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-      max_tokens: 200,
-      temperature: 0.5,
-      messages: [{
-        role: "user",
-        content: `Based on this patient's medical records, generate exactly 4 short, specific questions the patient should ask about their own health. Make them specific to the actual data, not generic.
-
-Records:
-${context}
-
-Respond ONLY with a valid JSON array of 4 strings, no explanation, no markdown:
-["question 1","question 2","question 3","question 4"]`,
-      }],
-    });
 
     let questions = [];
     try {
-      const raw = response.choices[0].message.content.trim();
-      questions = JSON.parse(raw);
-    } catch {
-      questions = ["What medications am I on?", "Any abnormal test results?", "What was my last diagnosis?", "Should I be concerned about anything?"];
+      // ── Call Gemini with Strict Structured Array Schema ──
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Based on this patient's medical records, generate exactly 4 short, highly specific questions the patient should ask their doctor about their health. The questions must be tailored to the actual medications, abnormal labs, or conditions visible in the data.\n\nRecords:\n${context}`,
+        config: {
+          systemInstruction: "You are an empathetic medical AI assistant helping a patient prepare for their doctor appointment. Generate exactly 4 short, actionable questions. Never use markdown formatting, backticks, or write conversational explanations.",
+          temperature: 0.5,
+          maxOutputTokens: 300,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            description: "A simple list containing exactly 4 string elements representing patient health questions.",
+            items: {
+              type: Type.STRING
+            }
+          }
+        },
+      });
+
+      questions = JSON.parse(response.text);
+    } catch (aiErr) {
+      console.error("Gemini failed to generate structured questions array:", aiErr);
+      // Clean fallback if anything unexpected happens during API execution
+      questions = [
+        "What do my recent test results mean for my long-term health?",
+        "Are there any interactions or side effects I should watch out for with my current medications?",
+        "What follow-up scans or appointments should I schedule next?",
+        "Are there any specific lifestyle modifications you recommend based on my records?"
+      ];
     }
 
     res.json({ success: true, questions });
@@ -1079,58 +1453,107 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     const allScanResults = [...scanResults, ...pdfScanResults];
     const merged = mergeResults(allScanResults.map(s => s.result));
 
+  // const savedRecords = await Promise.all(
+  //   allScanResults.map(async (scanResult, index) => {
+  //     const result = scanResult.result;
+
+  //     const dbData = {
+  //       user:            req.user.id,
+  //       documentType:    result.documentType,
+  //       imagePaths:      [scanResult.imagePath],
+  //       imagePath:       scanResult.imagePath,
+  //       pageCount:       1,
+  //       patientInfo:     result.patientInfo,
+  //       // additionalNotes: result.additionalNotes,
+  //       additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : result.additionalNotes,
+  //       confidence:      result.confidence,
+  //       warnings:        result.warnings,
+  //       // advice:        result.advice,
+  //       advice:        Array.isArray(result.advice) ? result.advice.join(". ") : result.advice,
+  //       meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
+  //       patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
+  //     };
+
+  //     // Add type-specific fields
+  //     if (result.documentType === "prescription") {
+  //       dbData.doctorInfo  = result.doctorInfo;
+  //       dbData.medications = result.medications;
+  //       dbData.diagnosis   = result.diagnosis;
+  //       dbData.symptoms   = result.symptoms;
+  //       dbData.followUpDate   = result.followUpDate;
+  //     }
+
+  //     if (result.documentType === "lab_test") {
+  //       dbData.labInfo        = result.labInfo;
+  //       // dbData.tests          = result.tests;
+  //       dbData.tests          = (result.tests || []).map(test => ({
+  //         ...test,
+  //         status: sanitizeTestStatus(test.status),   // ← sanitized
+  //       }));
+  //       dbData.summary        = result.summary;
+  //       dbData.criticalValues = result.criticalValues;
+  //     }
+
+  //     if (result.documentType === "radiology") {
+  //       dbData.studyInfo       = result.studyInfo;
+  //       dbData.findings        = result.findings;
+  //       dbData.impression      = result.impression;
+  //       dbData.recommendations = result.recommendations;
+  //     }
+
+  //     return Prescription.create(dbData);
+  //   })
+  // );
+
   const savedRecords = await Promise.all(
-    allScanResults.map(async (scanResult, index) => {
-      const result = scanResult.result;
+  allScanResults.map(async (scanResult, index) => {
+    const result = scanResult.result; // This is the JSON object returned by Gemini
 
-      const dbData = {
-        user:            req.user.id,
-        documentType:    result.documentType,
-        imagePaths:      [scanResult.imagePath],
-        imagePath:       scanResult.imagePath,
-        pageCount:       1,
-        patientInfo:     result.patientInfo,
-        // additionalNotes: result.additionalNotes,
-        additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : result.additionalNotes,
-        confidence:      result.confidence,
-        warnings:        result.warnings,
-        // advice:        result.advice,
-        advice:        Array.isArray(result.advice) ? result.advice.join(". ") : result.advice,
-        meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
-        patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
-      };
+    const dbData = {
+      user:            req.user.id,
+      documentType:    result.documentType || "prescription",
+      imagePaths:      [scanResult.imagePath],
+      imagePath:       scanResult.imagePath,
+      pageCount:       1,
+      patientInfo:     result.patientInfo || null,
+      additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : (result.additionalNotes || null),
+      confidence:      result.confidence || "high",
+      warnings:        result.warnings || [],
+      advice:          Array.isArray(result.advice) ? result.advice.join(". ") : (result.advice || null),
+      meta:            { processingTime: Date.now() - req.startTime, pageIndex: index },
+      patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"),
+    };
 
-      // Add type-specific fields
-      if (result.documentType === "prescription") {
-        dbData.doctorInfo  = result.doctorInfo;
-        dbData.medications = result.medications;
-        dbData.diagnosis   = result.diagnosis;
-        dbData.symptoms   = result.symptoms;
-        dbData.followUpDate   = result.followUpDate;
-      }
+    // ── CRITICAL FIX HERE ──────────────────────────────────────────
+    // We explicitly map the AI's response to your database fields
+    if (result.documentType === "prescription" || !result.documentType) {
+      dbData.doctorInfo  = result.doctorInfo || null;
+      dbData.medications = result.medications || []; // Makes sure medications array is preserved!
+      dbData.diagnosis   = result.diagnosis || null;
+      dbData.symptoms    = result.symptoms || [];
+      dbData.followUpDate = result.followUpDate || null;
+    }
 
-      if (result.documentType === "lab_test") {
-        dbData.labInfo        = result.labInfo;
-        // dbData.tests          = result.tests;
-        dbData.tests          = (result.tests || []).map(test => ({
-          ...test,
-          status: sanitizeTestStatus(test.status),   // ← sanitized
-        }));
-        dbData.summary        = result.summary;
-        dbData.criticalValues = result.criticalValues;
-      }
+    if (result.documentType === "lab_test") {
+      dbData.labInfo        = result.labInfo || null;
+      dbData.tests          = (result.tests || []).map(test => ({
+        ...test,
+        status: sanitizeTestStatus(test.status),
+      }));
+      dbData.summary        = result.summary || null;
+      dbData.criticalValues = result.criticalValues || [];
+    }
 
-      if (result.documentType === "radiology") {
-        dbData.studyInfo       = result.studyInfo;
-        dbData.findings        = result.findings;
-        dbData.impression      = result.impression;
-        dbData.recommendations = result.recommendations;
-      }
+    if (result.documentType === "radiology") {
+      dbData.studyInfo       = result.studyInfo || null;
+      dbData.findings        = result.findings || null;
+      dbData.impression      = result.impression || null;
+      dbData.recommendations = result.recommendations || null;
+    }
 
-      return Prescription.create(dbData);
-    })
-  );
-
+    return Prescription.create(dbData);
+  })
+);
     res.json({
       success: true,
       data: merged,

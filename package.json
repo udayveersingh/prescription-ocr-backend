@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.27.0",
     "@google-cloud/vision": "^5.3.5",
     "@google/genai": "^1.49.0",
+    "@google/generative-ai": "^0.24.1",
     "archiver": "^7.0.1",
     "bcryptjs": "^3.0.3",
     "canvas": "^3.2.3",
