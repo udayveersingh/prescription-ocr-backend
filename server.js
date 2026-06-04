@@ -1025,7 +1025,7 @@ Requirements:
     }
 
     // ── Format history maps for context ──
-    const recordsSummary = records.map(r => {
+    const recordsSummary = records.slice(0, 5).map(r => {
       if (r.documentType === "lab_test") {
         return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
       }
@@ -1043,29 +1043,43 @@ Requirements:
     try {
       const trendsRes = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards. Only include metrics that actually have numeric values in the records.\n\nRecords:\n${recordsSummary || "No records"}`,
+          contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
+Only include metrics that actually have numeric values in the records.
+
+Records:
+${recordsSummary || "No records"}
+
+Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
+[{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
+
+If no numeric metrics found, respond with: []`,
         config: {
           temperature: 0.1,
-          maxOutputTokens: 400,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            description: "List of numeric metrics showing structural trends over time.",
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING, description: "Name of the metric e.g., Cholesterol, Hb, Platelet" },
-                latestValue: { type: Type.STRING },
-                unit: { type: Type.STRING },
-                trend: { type: Type.STRING, description: "Must be 'up' or 'down'" },
-                change: { type: Type.STRING, description: "Trend character followed by amount variant e.g. '↓ 12'" }
-              },
-              required: ["name", "latestValue", "unit", "trend", "change"]
-            }
-          }
+          maxOutputTokens: 8192,
+          // responseMimeType: "application/json",
+          // responseSchema: {
+          //   type: Type.ARRAY,
+          //   description: "List of numeric metrics showing structural trends over time.",
+          //   items: {
+          //     type: Type.OBJECT,
+          //     properties: {
+          //       name: { type: Type.STRING, description: "Name of the metric e.g., Cholesterol, Hb, Platelet" },
+          //       latestValue: { type: Type.STRING },
+          //       unit: { type: Type.STRING },
+          //       trend: { type: Type.STRING, description: "Must be 'up' or 'down'" },
+          //       change: { type: Type.STRING, description: "Trend character followed by amount variant e.g. '↓ 12'" }
+          //     },
+          //     required: ["name", "latestValue", "unit", "trend", "change"]
+          //   }
+          // }
         }
       });
-      trends = JSON.parse(trendsRes.text);
+      // trends = JSON.parse(trendsRes.text);
+      const raw = trendsRes.text?.trim() ?? "";
+  console.log("Gemini trends raw:", raw); // 👈 ADD THIS to debug
+  const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const parsed = JSON.parse(cleaned);
+  trends = Array.isArray(parsed) ? parsed : [];
     } catch (err) {
       console.error("Gemini failed trends validation, returning default:", err);
       trends = [];
@@ -1077,23 +1091,38 @@ Requirements:
     try {
       const detailedRes = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).\n\nRecords:\n${recordsSummary || "No records"}`,
+          contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+
+    Records:
+    ${recordsSummary || "No records"}
+
+    Respond ONLY with valid JSON, no markdown:
+    {
+      "activeFocus": "1-2 sentences about most recent/active health episode with specific values",
+      "chronicManagement": "1-2 sentences about ongoing chronic conditions and medications",
+      "generalOutlook": "1-2 sentences about overall health status with any measurable trends"
+    }`,
+      // }],
         config: {
           temperature: 0.3,
-          maxOutputTokens: 500,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              activeFocus: { type: Type.STRING, description: "1-2 sentences about most recent/active health episode with specific values" },
-              chronicManagement: { type: Type.STRING, description: "1-2 sentences about ongoing chronic conditions and medications" },
-              generalOutlook: { type: Type.STRING, description: "1-2 sentences about overall health status with any measurable trends" }
-            },
-            required: ["activeFocus", "chronicManagement", "generalOutlook"]
-          }
+          maxOutputTokens: 8192,
+          // responseMimeType: "application/json",
+          // responseSchema: {
+          //   type: Type.OBJECT,
+          //   properties: {
+          //     activeFocus: { type: Type.STRING, description: "1-2 sentences about most recent/active health episode with specific values" },
+          //     chronicManagement: { type: Type.STRING, description: "1-2 sentences about ongoing chronic conditions and medications" },
+          //     generalOutlook: { type: Type.STRING, description: "1-2 sentences about overall health status with any measurable trends" }
+          //   },
+          //   required: ["activeFocus", "chronicManagement", "generalOutlook"]
+          // }
         }
       });
-      detailedSummary = JSON.parse(detailedRes.text);
+      // detailedSummary = JSON.parse(detailedRes.text);
+      const raw = detailedRes.text?.trim() ?? "";
+      console.log("Gemini detailed raw:", raw); // 👈 ADD THIS to debug
+      const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+      detailedSummary = JSON.parse(cleaned);
     } catch (err) {
       console.error("Gemini detailed summary structure failure:", err);
     }
