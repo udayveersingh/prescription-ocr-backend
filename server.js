@@ -842,13 +842,37 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
       }
     }).filter(Boolean).join("\n\n");
 
-    const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below. 
-Always be clear, friendly, and easy to understand for a non-medical person.
-Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
-If the answer is not in the records, say "I don't see this in your records."
+//     const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below. 
+// Always be clear, friendly, and easy to understand for a non-medical person.
+// Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
+// If the answer is not in the records, say "I don't see this in your records."
 
-PATIENT MEDICAL RECORDS:
-${context || "No records found."}`;
+// PATIENT MEDICAL RECORDS:
+// ${context || "No records found."}`;
+
+    const systemPrompt = `You are a healthcare record assistant.
+    Your primary responsibility is to analyze the patient's medical records.
+
+    You may also use general medical knowledge when the user's question requires explanation, wellness guidance, risk awareness, or preventive health advice.
+
+    When answering:
+
+    1. First use relevant information from the records.
+    2. Then provide general medical guidance if helpful.
+    3. Clearly distinguish between record-based information and general guidance.
+    4. Never diagnose.
+    5. Never prescribe medication changes.
+    6. Never replace a doctor.
+
+    If records are insufficient:
+    - Explain that the records do not contain enough information.
+    - Still provide useful general health information when appropriate.
+
+    Always end with:
+    "Please consult your doctor for personalized medical advice."
+
+    PATIENT MEDICAL RECORDS:
+    ${context || "No records found."}`;
 
     // ── Map Groq/OpenAI chat history format to Gemini SDK specifications ──
     // Groq uses { role: "user" | "assistant", content: "..." }
@@ -871,7 +895,7 @@ ${context || "No records found."}`;
       config: {
         systemInstruction: systemPrompt,
         temperature: 0.3,
-        maxOutputTokens: 800, // 🧠 Expanded slightly to let thorough multi-line explanations breathe
+        maxOutputTokens: 1500, // 🧠 Expanded slightly to let thorough multi-line explanations breathe
       }
     });
 
