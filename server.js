@@ -1594,7 +1594,15 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         status: sanitizeTestStatus(test.status),
       }));
       dbData.summary        = result.summary || null;
-      dbData.criticalValues = result.criticalValues || [];
+      // dbData.criticalValues = result.criticalValues || [];
+      dbData.criticalValues = (result.criticalValues || []).map(v => {
+        if (typeof v === "string") return v;
+        if (typeof v === "object") {
+          // Gemini returned an object like {testName, value, unit, status}
+          return `${v.testName || "Unknown"}: ${v.value || ""} ${v.unit || ""} (${v.status || ""})`.trim();
+        }
+        return String(v);
+      });
     }
 
     if (result.documentType === "radiology") {
