@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const { parsePatientDateString } = require("./utils/utils");
 const HealthQR = require("./models/HealthQR");
+const MemberProfileCache  = require("./models/MemberProfileCache");
 const cloudinary = require("cloudinary").v2;
 const { GoogleGenAI, Type } = require("@google/genai");
 // Initialize Gemini SDK
@@ -924,14 +925,252 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 }
 );
 
+// app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
+//   try {
+//     const query = { user: req.user.id, archived: { $ne: true } };
+//     if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
+
+//     const records = await Prescription.find(query).sort({ createdAt: -1 });
+
+//     // ── Documents list ──
+//     const documents = records.map(r => {
+//       if (r.documentType === "prescription") {
+//         const firstMed = r.medications?.[0];
+//         return {
+//           _id: r._id, type: "prescription", icon: "pill",
+//           title: firstMed ? `${firstMed.name}${firstMed.frequency ? " — " + firstMed.frequency : ""}` : "Prescription",
+//           subtitle: `${r.patientInfo?.date ? formatDate(r.patientInfo.date) : formatDate(r.createdAt)} · ${r.doctorInfo?.name || ""}`,
+//           tag: r.followUpDate ? `Refill ${formatDate(r.followUpDate)}` : null,
+//           tagColor: "#e8f5e9", tagTextColor: "#2e7d32", createdAt: r.createdAt,
+//         };
+//       }
+//       if (r.documentType === "lab_test") {
+//         const allNormal = r.tests?.every(t => t.status === "normal");
+//         const critical  = r.tests?.some(t => t.status === "critical");
+//         const firstTest = r.tests?.[0];
+//         return {
+//           _id: r._id, type: "lab_test", icon: "flask",
+//           title: firstTest?.testName || r.labInfo?.labName || "Lab Report",
+//           subtitle: `${formatDate(r.createdAt)} · ${r.labInfo?.labName || ""}`,
+//           tag: critical ? "Critical ⚠️" : allNormal ? "All normal ✓" : "Review needed",
+//           tagColor: critical ? "#fef2f2" : allNormal ? "#f1f8e9" : "#fffde7",
+//           tagTextColor: critical ? "#c62828" : allNormal ? "#388e3c" : "#f57f17",
+//           createdAt: r.createdAt,
+//         };
+//       }
+//       if (r.documentType === "radiology") {
+//         return {
+//           _id: r._id, type: "radiology", icon: "scan",
+//           title: `${r.studyInfo?.studyType || "Radiology"} — ${r.studyInfo?.bodyPart || ""}`,
+//           subtitle: formatDate(r.createdAt), tag: null, createdAt: r.createdAt,
+//         };
+//       }
+//       return null;
+//     }).filter(Boolean);
+
+//     // ── Build context for AI ──
+//     const medications   = [];
+//     const diagnoses     = [];
+//     const warnings      = [];
+//     const abnormalTests = [];
+
+//     records.forEach(r => {
+//       if (r.documentType === "prescription") {
+//         r.medications?.forEach(m => { if (m.name) medications.push(m.name); });
+//         if (r.diagnosis) diagnoses.push(r.diagnosis);
+//         r.warnings?.forEach(w => warnings.push(w));
+//       }
+//       if (r.documentType === "lab_test") {
+//         r.tests?.filter(t => t.status !== "normal").forEach(t => abnormalTests.push(`${t.testName} (${t.status})`));
+//         r.criticalValues?.forEach(v => warnings.push(v));
+//       }
+//     });
+
+//     // ── AI Health Summary (Plain text response configuration) ──
+//     let aiSummary = "";
+//     try {
+//       const summaryRes = await ai.models.generateContent({
+//         model: "gemini-2.5-flash",
+//         contents: `Review the following medical data summary:
+// - Medications: ${medications.join(", ") || "None"}
+// - Diagnoses: ${diagnoses.join(", ") || "None"}
+// - Abnormal Tests: ${abnormalTests.join(", ") || "None"}
+// - Warnings: ${warnings.join(", ") || "None"}
+// - Total Records: ${records.length}
+
+// Write a detailed, warm, and friendly patient health overview summary paragraph based ONLY on the data provided above. 
+// Requirements:
+// 1. It MUST be exactly 3 to 4 complete sentences long.
+// 2. Provide a thorough summary of their active medications, any abnormal results, and next steps mentioned.
+// 3. Do NOT provide medical advice. 
+// 4. Output your response as standard, raw, plain text. Do NOT wrap it in JSON structure, do NOT use markdown, and do NOT use backticks.`,
+//         config: {
+//           systemInstruction: "You are a professional medical assistant writing an overview for a patient dashboard profile. Write exactly 3 to 4 long, complete, comprehensive sentences. Never stop writing mid-sentence or truncate the text.",
+//           temperature: 0.5,
+//           maxOutputTokens: 600, // 🧠 Significantly bumped to guarantee 3-4 full sentences fit with room to spare
+//         },
+//       });
+      
+//       // Clean up the text response completely to bypass any broken parsing filters
+//       if (summaryRes.text) {
+//         aiSummary = summaryRes.text
+//           .replace(/```json/gi, "")
+//           .replace(/```/g, "")
+//           .trim();
+//       } else {
+//         aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
+//       }
+//     } catch (err) {
+//       console.error("Gemini summary prompt error:", err);
+//       aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
+//     }
+
+//     // ── Format history maps for context ──
+//     const recordsSummary = records.slice(0, 5).map(r => {
+//       if (r.documentType === "lab_test") {
+//         return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
+//       }
+//       if (r.documentType === "prescription") {
+//         return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map(m => m.name).join(", ")}`;
+//       }
+//       if (r.documentType === "radiology") {
+//         return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
+//       }
+//     }).filter(Boolean).join("\n");
+
+
+//     // ── AI Health Trends (Enforced Strict JSON Schema) ──
+//     let trends = [];
+//     try {
+//       const trendsRes = await ai.models.generateContent({
+//         model: "gemini-2.5-flash",
+//           contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
+// Only include metrics that actually have numeric values in the records.
+
+// Records:
+// ${recordsSummary || "No records"}
+
+// Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
+// [{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
+
+// If no numeric metrics found, respond with: []`,
+//         config: {
+//           temperature: 0.1,
+//           maxOutputTokens: 8192,
+//           // responseMimeType: "application/json",
+//           // responseSchema: {
+//           //   type: Type.ARRAY,
+//           //   description: "List of numeric metrics showing structural trends over time.",
+//           //   items: {
+//           //     type: Type.OBJECT,
+//           //     properties: {
+//           //       name: { type: Type.STRING, description: "Name of the metric e.g., Cholesterol, Hb, Platelet" },
+//           //       latestValue: { type: Type.STRING },
+//           //       unit: { type: Type.STRING },
+//           //       trend: { type: Type.STRING, description: "Must be 'up' or 'down'" },
+//           //       change: { type: Type.STRING, description: "Trend character followed by amount variant e.g. '↓ 12'" }
+//           //     },
+//           //     required: ["name", "latestValue", "unit", "trend", "change"]
+//           //   }
+//           // }
+//         }
+//       });
+//       // trends = JSON.parse(trendsRes.text);
+//       const raw = trendsRes.text?.trim() ?? "";
+//   console.log("Gemini trends raw:", raw); // 👈 ADD THIS to debug
+//   const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+//   const parsed = JSON.parse(cleaned);
+//   trends = Array.isArray(parsed) ? parsed : [];
+//     } catch (err) {
+//       console.error("Gemini failed trends validation, returning default:", err);
+//       trends = [];
+//     }
+
+
+//     // ── Detailed summary (3 pillars Enforced Strict JSON Schema) ──
+//     let detailedSummary = { activeFocus: "", chronicManagement: "", generalOutlook: "" };
+//     try {
+//       const detailedRes = await ai.models.generateContent({
+//         model: "gemini-2.5-flash",
+//           contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+
+//     Records:
+//     ${recordsSummary || "No records"}
+
+//     Respond ONLY with valid JSON, no markdown:
+//     {
+//       "activeFocus": "1-2 sentences about most recent/active health episode with specific values",
+//       "chronicManagement": "1-2 sentences about ongoing chronic conditions and medications",
+//       "generalOutlook": "1-2 sentences about overall health status with any measurable trends"
+//     }`,
+//       // }],
+//         config: {
+//           temperature: 0.3,
+//           maxOutputTokens: 8192,
+//           // responseMimeType: "application/json",
+//           // responseSchema: {
+//           //   type: Type.OBJECT,
+//           //   properties: {
+//           //     activeFocus: { type: Type.STRING, description: "1-2 sentences about most recent/active health episode with specific values" },
+//           //     chronicManagement: { type: Type.STRING, description: "1-2 sentences about ongoing chronic conditions and medications" },
+//           //     generalOutlook: { type: Type.STRING, description: "1-2 sentences about overall health status with any measurable trends" }
+//           //   },
+//           //   required: ["activeFocus", "chronicManagement", "generalOutlook"]
+//           // }
+//         }
+//       });
+//       // detailedSummary = JSON.parse(detailedRes.text);
+//       const raw = detailedRes.text?.trim() ?? "";
+//       console.log("Gemini detailed raw:", raw); // 👈 ADD THIS to debug
+//       const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+//       detailedSummary = JSON.parse(cleaned);
+//     } catch (err) {
+//       console.error("Gemini detailed summary structure failure:", err);
+//     }
+
+
+//     // ── Extract structural relational entities ──
+//     const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(0, 5);
+
+//     const activeMeds = records
+//       .filter(r => r.documentType === "prescription")
+//       .flatMap(r => r.medications?.map((m) => ({
+//         name: m.name,
+//         frequency: m.frequency,
+//         doctor: r.doctorInfo?.name,
+//       })) || [])
+//       .slice(0, 5);
+
+//     const latestLabs = records
+//       .filter(r => r.documentType === "lab_test")
+//       .flatMap(r => r.tests?.map((t) => ({
+//         testName: t.testName,
+//         value: t.value,
+//         unit: t.unit,
+//         status: t.status,
+//       })) || [])
+//       .slice(0, 5);
+
+//     res.json({
+//       success: true,
+//       data: { totalRecords: records.length, aiSummary, detailedSummary, chronicConditions, activeMeds, latestLabs, trends, documents }
+//     });
+
+//   } catch (err) {
+//     console.error("Member profile error:", err);
+//     res.status(500).json({ error: "Failed to load profile" });
+//   }
+// });
+
 app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
   try {
     const query = { user: req.user.id, archived: { $ne: true } };
-    if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
+    const familyMemberId = req.query.familyMemberId || null;
+    if (familyMemberId) query.familyMember = familyMemberId;
 
     const records = await Prescription.find(query).sort({ createdAt: -1 });
 
-    // ── Documents list ──
+    // ── Documents list (always fresh, no AI needed) ──
     const documents = records.map(r => {
       if (r.documentType === "prescription") {
         const firstMed = r.medications?.[0];
@@ -967,6 +1206,38 @@ app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => 
       return null;
     }).filter(Boolean);
 
+    const currentCount = records.length;
+
+    // ── Check cache ──
+    const cacheKey = {
+      user: req.user.id,
+      familyMember: familyMemberId,
+    };
+
+    const existingCache = await MemberProfileCache.findOne(cacheKey);
+
+    // ── Cache HIT: same document count → return cached AI data ──
+    if (existingCache && existingCache.documentCount === currentCount) {
+      console.log("✅ Cache hit — skipping Gemini calls");
+      return res.json({
+        success: true,
+        cached: true,
+        data: {
+          totalRecords:      currentCount,
+          aiSummary:         existingCache.aiSummary,
+          detailedSummary:   existingCache.detailedSummary,
+          chronicConditions: existingCache.chronicConditions,
+          activeMeds:        existingCache.activeMeds,
+          latestLabs:        existingCache.latestLabs,
+          trends:            existingCache.trends,
+          documents,
+        },
+      });
+    }
+
+    // ── Cache MISS or stale: run Gemini, then save ──
+    console.log("♻️ Cache miss — calling Gemini");
+
     // ── Build context for AI ──
     const medications   = [];
     const diagnoses     = [];
@@ -980,12 +1251,27 @@ app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => 
         r.warnings?.forEach(w => warnings.push(w));
       }
       if (r.documentType === "lab_test") {
-        r.tests?.filter(t => t.status !== "normal").forEach(t => abnormalTests.push(`${t.testName} (${t.status})`));
+        r.tests?.filter(t => t.status !== "normal")
+          .forEach(t => abnormalTests.push(`${t.testName} (${t.status})`));
         r.criticalValues?.forEach(v => warnings.push(v));
       }
     });
 
-    // ── AI Health Summary (Plain text response configuration) ──
+    // ── recordsSummary (last 5 only) ──
+    const recordsSummary = records.slice(0, 5).map(r => {
+      if (r.documentType === "lab_test") {
+        return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
+      }
+      if (r.documentType === "prescription") {
+        return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map(m => m.name).join(", ")}`;
+      }
+      if (r.documentType === "radiology") {
+        return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
+      }
+      return null;
+    }).filter(Boolean).join("\n");
+
+    // ── AI Summary ──
     let aiSummary = "";
     try {
       const summaryRes = await ai.models.generateContent({
@@ -997,53 +1283,32 @@ app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => 
 - Warnings: ${warnings.join(", ") || "None"}
 - Total Records: ${records.length}
 
-Write a detailed, warm, and friendly patient health overview summary paragraph based ONLY on the data provided above. 
+Write a detailed, warm, and friendly patient health overview summary paragraph based ONLY on the data provided above.
 Requirements:
 1. It MUST be exactly 3 to 4 complete sentences long.
 2. Provide a thorough summary of their active medications, any abnormal results, and next steps mentioned.
-3. Do NOT provide medical advice. 
+3. Do NOT provide medical advice.
 4. Output your response as standard, raw, plain text. Do NOT wrap it in JSON structure, do NOT use markdown, and do NOT use backticks.`,
         config: {
           systemInstruction: "You are a professional medical assistant writing an overview for a patient dashboard profile. Write exactly 3 to 4 long, complete, comprehensive sentences. Never stop writing mid-sentence or truncate the text.",
           temperature: 0.5,
-          maxOutputTokens: 600, // 🧠 Significantly bumped to guarantee 3-4 full sentences fit with room to spare
+          maxOutputTokens: 8192,
         },
       });
-      
-      // Clean up the text response completely to bypass any broken parsing filters
-      if (summaryRes.text) {
-        aiSummary = summaryRes.text
-          .replace(/```json/gi, "")
-          .replace(/```/g, "")
-          .trim();
-      } else {
-        aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
-      }
+      aiSummary = summaryRes.text
+        ? summaryRes.text.replace(/```json/gi, "").replace(/```/g, "").trim()
+        : "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
     } catch (err) {
-      console.error("Gemini summary prompt error:", err);
+      console.error("Gemini summary error:", err);
       aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
     }
 
-    // ── Format history maps for context ──
-    const recordsSummary = records.slice(0, 5).map(r => {
-      if (r.documentType === "lab_test") {
-        return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
-      }
-      if (r.documentType === "prescription") {
-        return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map(m => m.name).join(", ")}`;
-      }
-      if (r.documentType === "radiology") {
-        return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
-      }
-    }).filter(Boolean).join("\n");
-
-
-    // ── AI Health Trends (Enforced Strict JSON Schema) ──
+    // ── AI Trends ──
     let trends = [];
     try {
       const trendsRes = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-          contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
+        contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
 Only include metrics that actually have numeric values in the records.
 
 Records:
@@ -1053,106 +1318,91 @@ Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
 [{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
 
 If no numeric metrics found, respond with: []`,
-        config: {
-          temperature: 0.1,
-          maxOutputTokens: 8192,
-          // responseMimeType: "application/json",
-          // responseSchema: {
-          //   type: Type.ARRAY,
-          //   description: "List of numeric metrics showing structural trends over time.",
-          //   items: {
-          //     type: Type.OBJECT,
-          //     properties: {
-          //       name: { type: Type.STRING, description: "Name of the metric e.g., Cholesterol, Hb, Platelet" },
-          //       latestValue: { type: Type.STRING },
-          //       unit: { type: Type.STRING },
-          //       trend: { type: Type.STRING, description: "Must be 'up' or 'down'" },
-          //       change: { type: Type.STRING, description: "Trend character followed by amount variant e.g. '↓ 12'" }
-          //     },
-          //     required: ["name", "latestValue", "unit", "trend", "change"]
-          //   }
-          // }
-        }
+        config: { temperature: 0.1, maxOutputTokens: 8192 },
       });
-      // trends = JSON.parse(trendsRes.text);
       const raw = trendsRes.text?.trim() ?? "";
-  console.log("Gemini trends raw:", raw); // 👈 ADD THIS to debug
-  const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-  const parsed = JSON.parse(cleaned);
-  trends = Array.isArray(parsed) ? parsed : [];
+      const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+      const parsed = JSON.parse(cleaned);
+      trends = Array.isArray(parsed) ? parsed : [];
     } catch (err) {
-      console.error("Gemini failed trends validation, returning default:", err);
+      console.error("Gemini trends error:", err);
       trends = [];
     }
 
+    console.log("trends before save:", JSON.stringify(trends));
 
-    // ── Detailed summary (3 pillars Enforced Strict JSON Schema) ──
+    // ── AI Detailed Summary ──
     let detailedSummary = { activeFocus: "", chronicManagement: "", generalOutlook: "" };
     try {
       const detailedRes = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-          contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+        contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+        Records:
+        ${recordsSummary || "No records"}
 
-    Records:
-    ${recordsSummary || "No records"}
-
-    Respond ONLY with valid JSON, no markdown:
-    {
-      "activeFocus": "1-2 sentences about most recent/active health episode with specific values",
-      "chronicManagement": "1-2 sentences about ongoing chronic conditions and medications",
-      "generalOutlook": "1-2 sentences about overall health status with any measurable trends"
-    }`,
-      // }],
-        config: {
-          temperature: 0.3,
-          maxOutputTokens: 8192,
-          // responseMimeType: "application/json",
-          // responseSchema: {
-          //   type: Type.OBJECT,
-          //   properties: {
-          //     activeFocus: { type: Type.STRING, description: "1-2 sentences about most recent/active health episode with specific values" },
-          //     chronicManagement: { type: Type.STRING, description: "1-2 sentences about ongoing chronic conditions and medications" },
-          //     generalOutlook: { type: Type.STRING, description: "1-2 sentences about overall health status with any measurable trends" }
-          //   },
-          //   required: ["activeFocus", "chronicManagement", "generalOutlook"]
-          // }
-        }
+        Respond ONLY with valid JSON, no markdown, no backticks:
+        {
+          "activeFocus": "...",
+          "chronicManagement": "...",
+          "generalOutlook": "..."
+        }`,
+        config: { temperature: 0.3, maxOutputTokens: 8192 },
       });
-      // detailedSummary = JSON.parse(detailedRes.text);
       const raw = detailedRes.text?.trim() ?? "";
-      console.log("Gemini detailed raw:", raw); // 👈 ADD THIS to debug
       const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
       detailedSummary = JSON.parse(cleaned);
     } catch (err) {
-      console.error("Gemini detailed summary structure failure:", err);
+      console.error("Gemini detailed summary error:", err);
     }
 
-
-    // ── Extract structural relational entities ──
-    const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(0, 5);
+    // ── Structured data (no AI needed) ──
+    const chronicConditions = [...new Set(diagnoses.filter(d => d))].slice(0, 5);
 
     const activeMeds = records
       .filter(r => r.documentType === "prescription")
-      .flatMap(r => r.medications?.map((m) => ({
-        name: m.name,
-        frequency: m.frequency,
-        doctor: r.doctorInfo?.name,
+      .flatMap(r => r.medications?.map(m => ({
+        name: m.name, frequency: m.frequency, doctor: r.doctorInfo?.name,
       })) || [])
       .slice(0, 5);
 
     const latestLabs = records
       .filter(r => r.documentType === "lab_test")
-      .flatMap(r => r.tests?.map((t) => ({
-        testName: t.testName,
-        value: t.value,
-        unit: t.unit,
-        status: t.status,
+      .flatMap(r => r.tests?.map(t => ({
+        testName: t.testName, value: t.value, unit: t.unit, status: t.status,
       })) || [])
       .slice(0, 5);
 
+    // ── Save/update cache ──
+    await MemberProfileCache.findOneAndUpdate(
+      cacheKey,
+      {
+        $set: {
+          documentCount:     currentCount,
+          aiSummary,
+          detailedSummary,
+          trends,
+          chronicConditions,
+          activeMeds,
+          latestLabs,
+        },
+      },
+      { upsert: true, new: true }
+    );
+    console.log("💾 Cache saved for", cacheKey);
+
     res.json({
       success: true,
-      data: { totalRecords: records.length, aiSummary, detailedSummary, chronicConditions, activeMeds, latestLabs, trends, documents }
+      cached: false,
+      data: {
+        totalRecords: currentCount,
+        aiSummary,
+        detailedSummary,
+        chronicConditions,
+        activeMeds,
+        latestLabs,
+        trends,
+        documents,
+      },
     });
 
   } catch (err) {
