@@ -1170,6 +1170,35 @@ app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => 
 
     const records = await Prescription.find(query).sort({ createdAt: -1 });
 
+    // ── Extract basic health info from latest 3 records ──
+    const basicHealthInfo = {
+      age: null,
+      gender: null,
+      weight: null,
+      bloodGroup: null,
+      allergies: [],
+    };
+
+    const latest3 = records.slice(0, 3);
+
+    for (const r of latest3) {
+      if (!basicHealthInfo.age && r.patientInfo?.age) 
+        basicHealthInfo.age = r.patientInfo.age;
+      if (!basicHealthInfo.gender && r.patientInfo?.gender) 
+        basicHealthInfo.gender = r.patientInfo.gender;
+      if (!basicHealthInfo.weight && r.patientInfo?.weight) 
+        basicHealthInfo.weight = r.patientInfo.weight;
+      if (!basicHealthInfo.bloodGroup && r.patientInfo?.bloodGroup) 
+        basicHealthInfo.bloodGroup = r.patientInfo.bloodGroup;
+      if (!basicHealthInfo.allergies.length && r.warnings?.length) 
+        basicHealthInfo.allergies = r.warnings;
+
+      // Stop early if all fields found
+      const allFound = basicHealthInfo.age && basicHealthInfo.gender && 
+                      basicHealthInfo.weight && basicHealthInfo.bloodGroup;
+      if (allFound) break;
+    }
+
     // ── Documents list (always fresh, no AI needed) ──
     const documents = records.map(r => {
       if (r.documentType === "prescription") {
@@ -1224,6 +1253,7 @@ app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => 
         cached: true,
         data: {
           totalRecords:      currentCount,
+          basicHealthInfo,  
           aiSummary:         existingCache.aiSummary,
           detailedSummary:   existingCache.detailedSummary,
           chronicConditions: existingCache.chronicConditions,
