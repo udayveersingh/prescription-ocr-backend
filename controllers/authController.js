@@ -136,7 +136,7 @@ exports.google = async (req, res) => {
     }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "30d" });
-    res.json({ success: true, token, user: { name: user.name, email: user.email } });
+    res.json({ success: true, token, user: { name: user.name, email: user.email,  termsAcceptedAt: user.termsAcceptedAt } });
   } catch (err) {
     console.error("Google auth error:", err);
     res.status(401).json({ success: false, error: "Invalid Google token" });
