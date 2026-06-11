@@ -47,7 +47,7 @@ app.use(
 );
 app.use(express.json({ limit: "10mb" }));
 
-connectDB();    //shoud be in listen callback -aman
+connectDB();
 
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
@@ -63,7 +63,7 @@ const limiter = rateLimit({
   max: 60,
   message: { error: "Too many requests, please try again later." },
 });
-app.use("/api/", limiter);  
+app.use("/api/", limiter);
 
 // Multer setup - memory storage (no disk write needed)
 const upload = multer({
