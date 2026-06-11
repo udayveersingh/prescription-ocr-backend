@@ -15,10 +15,31 @@ const familyMemberSchema = new mongoose.Schema(
     relation: {
       type: String,
       required: true,
-      enum: ["Self", "Mother", "Father", "Spouse", "Son", "Daughter", "Sibling", "Other"],
+      enum: [
+        "Self",
+        "Mother",
+        "Father",
+        "Spouse",
+        "Son",
+        "Daughter",
+        "Sibling",
+        "Other",
+      ],
+    },
+    age: {
+      type: String,
+    },
+    gender: {
+      type: String,
+    },
+    weight: {
+      type: String,
+    },
+    blood_group: {
+      type: String,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // One user can't have duplicate relation+name combos

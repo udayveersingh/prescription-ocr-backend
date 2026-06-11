@@ -1,5 +1,5 @@
-const express      = require("express");
-const router       = express.Router();
+const express = require("express");
+const router = express.Router();
 const authMiddleware = require("./../middleware/authMiddleware"); // your existing JWT middleware
 const FamilyMember = require("../models/FamilyMember");
 const Prescription = require("../models/Prescription");
@@ -7,17 +7,19 @@ const Prescription = require("../models/Prescription");
 // ── GET /api/family ── list all members with scan count
 router.get("/", authMiddleware, async (req, res) => {
   try {
-    const members = await FamilyMember.find({ user: req.user.id }).sort({ createdAt: 1 });
+    const members = await FamilyMember.find({ user: req.user.id }).sort({
+      createdAt: 1,
+    });
 
     const withCounts = await Promise.all(
       members.map(async (m) => {
         const count = await Prescription.countDocuments({
           user: req.user.id,
           familyMember: m._id,
-          archived: { $ne: true }
+          archived: { $ne: true },
         });
         return { ...m.toObject(), scanCount: count };
-      })
+      }),
     );
 
     res.json({ success: true, data: withCounts });
@@ -31,14 +33,22 @@ router.post("/", authMiddleware, async (req, res) => {
   try {
     const { name, relation } = req.body;
     if (!name || !relation)
-      return res.status(400).json({ success: false, error: "Name and relation required" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Name and relation required" });
 
-    const member = await FamilyMember.create({ user: req.user.id, name, relation });
+    const member = await FamilyMember.create({
+      user: req.user.id,
+      name,
+      relation,
+    });
     res.json({ success: true, data: { ...member.toObject(), scanCount: 0 } });
   } catch (err) {
     // duplicate key error
     if (err.code === 11000)
-      return res.status(400).json({ success: false, error: "Member already exists" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Member already exists" });
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -50,10 +60,12 @@ router.put("/:id", authMiddleware, async (req, res) => {
     const member = await FamilyMember.findOneAndUpdate(
       { _id: req.params.id, user: req.user.id },
       { name, relation },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
     if (!member)
-      return res.status(404).json({ success: false, error: "Member not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Member not found" });
     res.json({ success: true, data: member });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -63,11 +75,16 @@ router.put("/:id", authMiddleware, async (req, res) => {
 // ── DELETE /api/family/:id ── remove member
 router.delete("/:id", authMiddleware, async (req, res) => {
   try {
-    const member = await FamilyMember.findOne({ _id: req.params.id, user: req.user.id });
+    const member = await FamilyMember.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
     if (!member)
       return res.status(404).json({ success: false, error: "Not found" });
     if (member.relation === "Self")
-      return res.status(400).json({ success: false, error: "Cannot delete Self" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Cannot delete Self" });
 
     await member.deleteOne();
     res.json({ success: true });
@@ -82,12 +99,33 @@ router.put("/api/family/:id", authMiddleware, async (req, res) => {
     const member = await FamilyMember.findOneAndUpdate(
       { _id: req.params.id, user: req.user.id },
       { name, relation },
-      { new: true }
+      { new: true },
     );
     if (!member) return res.status(404).json({ error: "Member not found" });
     res.json({ success: true, data: member });
   } catch (err) {
     res.status(500).json({ error: "Failed to update member" });
+  }
+});
+
+router.patch("/member", authMiddleware, async (req, res) => {
+  try {
+    const { member_id, age, bloodGroup, gender, weight } = req.body;
+    const newMemberData = await FamilyMember.findByIdAndUpdate(member_id, {
+      age,
+      blood_group:bloodGroup,
+      gender,
+      weight,
+    });
+
+    if(newMemberData){
+      return res.status(200).json({
+        status:true,
+        data:newMemberData
+      })
+    }
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to update member" });
   }
 });
 

@@ -4,7 +4,10 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { processImage, extractTextFromImage } = require("./services/ocrService");
-const { analyzePrescription, analyzeTextOnly } = require("./services/aiService");
+const {
+  analyzePrescription,
+  analyzeTextOnly,
+} = require("./services/aiService");
 const { validateImage } = require("./middleware/validateImage");
 const Prescription = require("./models/Prescription");
 const authMiddleware = require("./middleware/authMiddleware");
@@ -17,9 +20,10 @@ const fs = require("fs");
 const path = require("path");
 const { parsePatientDateString } = require("./utils/utils");
 const HealthQR = require("./models/HealthQR");
-const MemberProfileCache  = require("./models/MemberProfileCache");
+const MemberProfileCache = require("./models/MemberProfileCache");
 const cloudinary = require("cloudinary").v2;
 const { GoogleGenAI, Type } = require("@google/genai");
+const FamilyMember = require("./models/FamilyMember");
 // Initialize Gemini SDK
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -34,14 +38,16 @@ const PORT = process.env.PORT || 3000;
 
 // Security middleware
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST","PUT", "OPTIONS","DELETE", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "OPTIONS", "DELETE", "PATCH"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 app.use(express.json({ limit: "10mb" }));
 
-connectDB();
+connectDB();    //shoud be in listen callback -aman
 
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
@@ -49,7 +55,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR);
 }
 
-app.set('trust proxy', 1);
+app.set("trust proxy", 1);
 
 // Rate limiting - important for free AI APIs
 const limiter = rateLimit({
@@ -57,7 +63,7 @@ const limiter = rateLimit({
   max: 60,
   message: { error: "Too many requests, please try again later." },
 });
-app.use("/api/", limiter);
+app.use("/api/", limiter);  
 
 // Multer setup - memory storage (no disk write needed)
 const upload = multer({
@@ -145,7 +151,6 @@ app.use("/api/auth", authRoutes);
 // );
 
 app.get("/api/prescription/history", authMiddleware, async (req, res) => {
-
   try {
     const query = { user: req.user.id, archived: { $ne: true } };
 
@@ -157,24 +162,19 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
     //   .find({ user: req.user.id })
     //   .sort({ createdAt: -1 });
 
-    const prescriptions = await Prescription
-      .find(query)
+    const prescriptions = await Prescription.find(query)
       // .sort({ createdAt: -1 });
       .sort({ patientParsedDate: -1 });
 
     res.json({
       success: true,
-      data: prescriptions
+      data: prescriptions,
     });
-
   } catch (err) {
-
     res.status(500).json({
-      error: "Failed to fetch history"
+      error: "Failed to fetch history",
     });
-
   }
-
 });
 
 // app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
@@ -194,7 +194,6 @@ app.get("/api/prescription/history", authMiddleware, async (req, res) => {
 //   }
 // });
 
-
 app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
   try {
     const prescription = await Prescription.findOne({
@@ -207,8 +206,9 @@ app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
     }
 
     // ── Delete files from Cloudinary ──
-    const allImagePaths = prescription.imagePaths || 
-                         (prescription.imagePath ? [prescription.imagePath] : []);
+    const allImagePaths =
+      prescription.imagePaths ||
+      (prescription.imagePath ? [prescription.imagePath] : []);
 
     await Promise.allSettled(
       allImagePaths.map(async (url) => {
@@ -216,7 +216,7 @@ app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
           // Extract public_id from Cloudinary URL
           // URL format: https://res.cloudinary.com/{cloud}/image/upload/v123/{folder}/{public_id}.ext
           // OR for raw:  https://res.cloudinary.com/{cloud}/raw/upload/v123/{folder}/{public_id}
-          
+
           const isRaw = url.includes("/raw/upload/");
           const resourceType = isRaw ? "raw" : "image";
 
@@ -225,25 +225,26 @@ app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
           if (uploadIndex === -1) return;
 
           let publicIdWithExt = url.substring(uploadIndex + 8); // skip "/upload/"
-          
+
           // Remove version segment if present (v1234567890/)
           publicIdWithExt = publicIdWithExt.replace(/^v\d+\//, "");
-          
+
           // Remove file extension for images (keep for raw/pdf)
-          const publicId = isRaw 
-            ? publicIdWithExt 
+          const publicId = isRaw
+            ? publicIdWithExt
             : publicIdWithExt.replace(/\.[^/.]+$/, "");
 
-          console.log(`🗑️ Deleting from Cloudinary: ${publicId} (${resourceType})`);
+          console.log(
+            `🗑️ Deleting from Cloudinary: ${publicId} (${resourceType})`,
+          );
 
-          await cloudinary.uploader.destroy(publicId, { 
-            resource_type: resourceType 
+          await cloudinary.uploader.destroy(publicId, {
+            resource_type: resourceType,
           });
-
         } catch (err) {
           console.error("Cloudinary delete error for URL:", url, err);
         }
-      })
+      }),
     );
 
     // ── Delete from DB ──
@@ -253,31 +254,37 @@ app.delete("/api/prescription/:id", authMiddleware, async (req, res) => {
     });
 
     res.json({ success: true, message: "Record and files deleted" });
-
   } catch (err) {
     console.error("Delete error:", err);
     res.status(500).json({ error: "Failed to delete record" });
   }
 });
 
-app.patch("/api/prescription/:id/medication/:medIndex", authMiddleware, async (req, res) => {
-  try {
-    const { id, medIndex } = req.params;
-    const { name } = req.body;
+app.patch(
+  "/api/prescription/:id/medication/:medIndex",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { id, medIndex } = req.params;
+      const { name } = req.body;
 
-    const prescription = await Prescription.findOne({ _id: id, user: req.user.id });
-    if (!prescription) return res.status(404).json({ error: "Not found" });
+      const prescription = await Prescription.findOne({
+        _id: id,
+        user: req.user.id,
+      });
+      if (!prescription) return res.status(404).json({ error: "Not found" });
 
-    prescription.medications[medIndex].name = name;
-    await prescription.save();
+      prescription.medications[medIndex].name = name;
+      await prescription.save();
 
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to update" });
-  }
-});
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update" });
+    }
+  },
+);
 
-app.get('/api/update-prescriptions', async(req, res) =>{
+app.get("/api/update-prescriptions", async (req, res) => {
   try {
     const prescriptions = await Prescription.find({ patientParsedDate: null });
     for (const doc of prescriptions) {
@@ -288,12 +295,12 @@ app.get('/api/update-prescriptions', async(req, res) =>{
     }
     console.log(`Migrated ${prescriptions.length} records`);
 
-    return res.json({status: "date updated"});
+    return res.json({ status: "date updated" });
   } catch (err) {
     console.log("error while update prescription ;;;", err);
     res.status(500).json({ success: false, error: err.message });
   }
-})
+});
 
 app.get("/backup", (req, res) => {
   const fs = require("fs");
@@ -313,7 +320,7 @@ app.put("/api/prescription/assign-family", authMiddleware, async (req, res) => {
     const { savedIds, familyMemberId } = req.body;
     await Prescription.updateMany(
       { _id: { $in: savedIds }, user: req.user.id },
-      { familyMember: familyMemberId || null }
+      { familyMember: familyMemberId || null },
     );
     res.json({ success: true });
   } catch (err) {
@@ -336,24 +343,31 @@ function mergeResults(results) {
 
   // ── Handle lab_test merging ──────────────────────────────
   if (documentType === "lab_test") {
-    const patientInfo = results.find(r => r.patientInfo?.name)?.patientInfo
-      || results[0].patientInfo;
+    const patientInfo =
+      results.find((r) => r.patientInfo?.name)?.patientInfo ||
+      results[0].patientInfo;
 
-    const labInfo = results.find(r => r.labInfo?.labName)?.labInfo
-      || results[0].labInfo;
+    const labInfo =
+      results.find((r) => r.labInfo?.labName)?.labInfo || results[0].labInfo;
 
     // Merge all tests, remove duplicates by testName
-    const allTests = results.flatMap(r => r.tests || []);
+    const allTests = results.flatMap((r) => r.tests || []);
     const uniqueTests = allTests.filter(
       (test, index, self) =>
-        index === self.findIndex(t =>
-          t.testName?.toLowerCase() === test.testName?.toLowerCase()
-        )
+        index ===
+        self.findIndex(
+          (t) => t.testName?.toLowerCase() === test.testName?.toLowerCase(),
+        ),
     );
 
-    const criticalValues = [...new Set(results.flatMap(r => r.criticalValues || []))];
-    const warnings = [...new Set(results.flatMap(r => r.warnings || []))];
-    const summaries = results.map(r => r.summary).filter(Boolean).join(" | ");
+    const criticalValues = [
+      ...new Set(results.flatMap((r) => r.criticalValues || [])),
+    ];
+    const warnings = [...new Set(results.flatMap((r) => r.warnings || []))];
+    const summaries = results
+      .map((r) => r.summary)
+      .filter(Boolean)
+      .join(" | ");
 
     return {
       documentType: "lab_test",
@@ -362,7 +376,11 @@ function mergeResults(results) {
       tests: uniqueTests,
       summary: summaries || null,
       criticalValues,
-      additionalNotes: results.map(r => r.additionalNotes).filter(Boolean).join(" | ") || null,
+      additionalNotes:
+        results
+          .map((r) => r.additionalNotes)
+          .filter(Boolean)
+          .join(" | ") || null,
       confidence: getLowestConfidence(results),
       warnings,
     };
@@ -372,37 +390,54 @@ function mergeResults(results) {
   if (documentType === "radiology") {
     return {
       documentType: "radiology",
-      patientInfo: results.find(r => r.patientInfo?.name)?.patientInfo || results[0].patientInfo,
-      studyInfo:   results.find(r => r.studyInfo?.studyType)?.studyInfo || results[0].studyInfo,
-      findings:    results.map(r => r.findings).filter(Boolean).join("\n\n") || null,
-      impression:  results.map(r => r.impression).filter(Boolean).join("\n\n") || null,
-      recommendations: results.map(r => r.recommendations).filter(Boolean).join(" | ") || null,
-      confidence:  getLowestConfidence(results),
-      warnings:    [...new Set(results.flatMap(r => r.warnings || []))],
+      patientInfo:
+        results.find((r) => r.patientInfo?.name)?.patientInfo ||
+        results[0].patientInfo,
+      studyInfo:
+        results.find((r) => r.studyInfo?.studyType)?.studyInfo ||
+        results[0].studyInfo,
+      findings:
+        results
+          .map((r) => r.findings)
+          .filter(Boolean)
+          .join("\n\n") || null,
+      impression:
+        results
+          .map((r) => r.impression)
+          .filter(Boolean)
+          .join("\n\n") || null,
+      recommendations:
+        results
+          .map((r) => r.recommendations)
+          .filter(Boolean)
+          .join(" | ") || null,
+      confidence: getLowestConfidence(results),
+      warnings: [...new Set(results.flatMap((r) => r.warnings || []))],
     };
   }
 
   // Helper
-function getLowestConfidence(results) {
-  const order = { high: 3, medium: 2, low: 1 };
-  return results.reduce((lowest, r) => {
-    return order[r.confidence] < order[lowest] ? r.confidence : lowest;
-  }, "high");
-}
+  function getLowestConfidence(results) {
+    const order = { high: 3, medium: 2, low: 1 };
+    return results.reduce((lowest, r) => {
+      return order[r.confidence] < order[lowest] ? r.confidence : lowest;
+    }, "high");
+  }
 
   // ── Handle prescription merging (original) ───────────────
-  const patientInfo = results.find(r => r.patientInfo?.name)?.patientInfo
-    || results[0].patientInfo;
+  const patientInfo =
+    results.find((r) => r.patientInfo?.name)?.patientInfo ||
+    results[0].patientInfo;
 
-  const doctorInfo = results.find(r => r.doctorInfo?.name)?.doctorInfo
-    || results[0].doctorInfo;
+  const doctorInfo =
+    results.find((r) => r.doctorInfo?.name)?.doctorInfo ||
+    results[0].doctorInfo;
 
-  const allMedications = results.flatMap(r => r.medications || []);
+  const allMedications = results.flatMap((r) => r.medications || []);
   const uniqueMedications = allMedications.filter(
     (med, index, self) =>
-      index === self.findIndex(m =>
-        m.name?.toLowerCase() === med.name?.toLowerCase()
-      )
+      index ===
+      self.findIndex((m) => m.name?.toLowerCase() === med.name?.toLowerCase()),
   );
 
   return {
@@ -410,10 +445,18 @@ function getLowestConfidence(results) {
     patientInfo,
     doctorInfo,
     medications: uniqueMedications,
-    diagnosis: results.map(r => r.diagnosis).filter(Boolean).join(", ") || null,
-    additionalNotes: results.map(r => r.additionalNotes).filter(Boolean).join(" | ") || null,
+    diagnosis:
+      results
+        .map((r) => r.diagnosis)
+        .filter(Boolean)
+        .join(", ") || null,
+    additionalNotes:
+      results
+        .map((r) => r.additionalNotes)
+        .filter(Boolean)
+        .join(" | ") || null,
     confidence: getLowestConfidence(results),
-    warnings: [...new Set(results.flatMap(r => r.warnings || []))],
+    warnings: [...new Set(results.flatMap((r) => r.warnings || []))],
   };
 }
 
@@ -425,38 +468,38 @@ function sanitizeTestStatus(status) {
   // Map common AI responses to valid values
   const map = {
     "not applicable": "normal",
-    "n/a":            "normal",
-    "na":             "normal",
-    "within range":   "normal",
-    "in range":       "normal",
-    "elevated":       "high",
-    "above normal":   "high",
-    "below normal":   "low",
-    "decreased":      "low",
-    "abnormal":       "high",
-    "borderline":     "high",
-    "positive":       "high",   // for culture/sensitivity tests
-    "negative":       "normal",
-    "reactive":       "high",
-    "non-reactive":   "normal",
+    "n/a": "normal",
+    na: "normal",
+    "within range": "normal",
+    "in range": "normal",
+    elevated: "high",
+    "above normal": "high",
+    "below normal": "low",
+    decreased: "low",
+    abnormal: "high",
+    borderline: "high",
+    positive: "high", // for culture/sensitivity tests
+    negative: "normal",
+    reactive: "high",
+    "non-reactive": "normal",
   };
   return map[s] || "normal"; // fallback to "normal" if unknown
 }
 
 const uploadToCloudinary = (buffer) => {
   return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_stream(
-      {
-        folder: "prescriptions",
-        transformation: [
-          { quality: "auto", fetch_format: "auto" }
-        ],
-      },
-      (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      }
-    ).end(buffer);
+    cloudinary.uploader
+      .upload_stream(
+        {
+          folder: "prescriptions",
+          transformation: [{ quality: "auto", fetch_format: "auto" }],
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        },
+      )
+      .end(buffer);
   });
 };
 
@@ -468,30 +511,56 @@ app.get("/api/prescription/summary", authMiddleware, async (req, res) => {
     const records = await Prescription.find(query).sort({ createdAt: -1 });
 
     const medications = [];
-    const tests       = [];
-    const doctors     = [];
-    const diagnoses   = [];
-    const warnings    = [];
+    const tests = [];
+    const doctors = [];
+    const diagnoses = [];
+    const warnings = [];
 
-    records.forEach(r => {
+    records.forEach((r) => {
       if (r.documentType === "prescription") {
-        r.medications?.forEach(m => {
-          if (m.name) medications.push({ name: m.name, dosage: m.dosage, frequency: m.frequency, duration: m.duration, date: r.createdAt });
+        r.medications?.forEach((m) => {
+          if (m.name)
+            medications.push({
+              name: m.name,
+              dosage: m.dosage,
+              frequency: m.frequency,
+              duration: m.duration,
+              date: r.createdAt,
+            });
         });
         if (r.doctorInfo?.name) {
-          const exists = doctors.find(d => d.name === r.doctorInfo.name);
-          if (!exists) doctors.push({ name: r.doctorInfo.name, specialization: r.doctorInfo.specialization, clinic: r.doctorInfo.clinic, lastVisit: r.createdAt });
+          const exists = doctors.find((d) => d.name === r.doctorInfo.name);
+          if (!exists)
+            doctors.push({
+              name: r.doctorInfo.name,
+              specialization: r.doctorInfo.specialization,
+              clinic: r.doctorInfo.clinic,
+              lastVisit: r.createdAt,
+            });
         }
-        if (r.diagnosis) diagnoses.push({ text: r.diagnosis, date: r.createdAt });
-        r.symptoms?.forEach(s => { if (s) diagnoses.push({ text: s, date: r.createdAt, type: "symptom" }); });
+        if (r.diagnosis)
+          diagnoses.push({ text: r.diagnosis, date: r.createdAt });
+        r.symptoms?.forEach((s) => {
+          if (s)
+            diagnoses.push({ text: s, date: r.createdAt, type: "symptom" });
+        });
       }
       if (r.documentType === "lab_test") {
-        r.tests?.forEach(t => {
-          tests.push({ testName: t.testName, value: t.value, unit: t.unit, status: t.status, referenceRange: t.referenceRange, date: r.createdAt });
+        r.tests?.forEach((t) => {
+          tests.push({
+            testName: t.testName,
+            value: t.value,
+            unit: t.unit,
+            status: t.status,
+            referenceRange: t.referenceRange,
+            date: r.createdAt,
+          });
         });
-        r.criticalValues?.forEach(v => warnings.push({ text: v, date: r.createdAt }));
+        r.criticalValues?.forEach((v) =>
+          warnings.push({ text: v, date: r.createdAt }),
+        );
       }
-      r.warnings?.forEach(w => warnings.push({ text: w, date: r.createdAt }));
+      r.warnings?.forEach((w) => warnings.push({ text: w, date: r.createdAt }));
     });
 
     // ── Groq instead of Anthropic ──
@@ -502,35 +571,54 @@ app.get("/api/prescription/summary", authMiddleware, async (req, res) => {
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
       max_tokens: 300,
       temperature: 0.3,
-      messages: [{
-        role: "user",
-        content: `You are a medical summary assistant. Based on the following patient data, write a clear, friendly health summary in 3-4 sentences covering overall health status, key concerns, and any patterns you notice. Do not give medical advice. Keep it simple for a non-medical person to understand.
+      messages: [
+        {
+          role: "user",
+          content: `You are a medical summary assistant. Based on the following patient data, write a clear, friendly health summary in 3-4 sentences covering overall health status, key concerns, and any patterns you notice. Do not give medical advice. Keep it simple for a non-medical person to understand.
 
 Patient Data:
 - Total Records: ${records.length}
-- Medications: ${medications.map(m => m.name).join(", ") || "None"}
-- Diagnoses: ${diagnoses.filter(d => !d.type).map(d => d.text).join(", ") || "None"}
-- Abnormal Tests: ${tests.filter(t => t.status !== "normal").map(t => `${t.testName} (${t.status})`).join(", ") || "None"}
-- Warnings: ${warnings.map(w => w.text).join(", ") || "None"}
-- Doctors Visited: ${doctors.map(d => d.name).join(", ") || "None"}
+- Medications: ${medications.map((m) => m.name).join(", ") || "None"}
+- Diagnoses: ${
+            diagnoses
+              .filter((d) => !d.type)
+              .map((d) => d.text)
+              .join(", ") || "None"
+          }
+- Abnormal Tests: ${
+            tests
+              .filter((t) => t.status !== "normal")
+              .map((t) => `${t.testName} (${t.status})`)
+              .join(", ") || "None"
+          }
+- Warnings: ${warnings.map((w) => w.text).join(", ") || "None"}
+- Doctors Visited: ${doctors.map((d) => d.name).join(", ") || "None"}
 
 Write the summary now:`,
-      }],
+        },
+      ],
     });
 
-    const aiSummary = response.choices[0].message.content || "Summary unavailable.";
+    const aiSummary =
+      response.choices[0].message.content || "Summary unavailable.";
 
     res.json({
       success: true,
-      data: { aiSummary, medications, tests, doctors, diagnoses, warnings, totalRecords: records.length }
+      data: {
+        aiSummary,
+        medications,
+        tests,
+        doctors,
+        diagnoses,
+        warnings,
+        totalRecords: records.length,
+      },
     });
-
   } catch (err) {
     console.error("Summary error:", err);
     res.status(500).json({ error: "Failed to generate summary" });
   }
 });
-
 
 // app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) => {
 //   try {
@@ -539,10 +627,10 @@ Write the summary now:`,
 //     // ── Fetch all records for context ──
 //     const query = { user: req.user.id, archived: { $ne: true } };
 //     if (familyMemberId) query.familyMember = familyMemberId;
-//     const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10); 
+//     const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10);
 
 //     // ── Build medical context from records ──
-//     const context = records.map(r => {                                          
+//     const context = records.map(r => {
 //       if (r.documentType === "prescription") {
 //         return `
 // Prescription (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
@@ -572,7 +660,7 @@ Write the summary now:`,
 //       }
 //     }).filter(Boolean).join("\n\n");
 
-//     const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below. 
+//     const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below.
 // Always be clear, friendly, and easy to understand for a non-medical person.
 // Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
 // If the answer is not in the records, say "I don't see this in your records."
@@ -802,56 +890,63 @@ Write the summary now:`,
 //   }
 // });
 
+app.post(
+  "/api/prescription/second-opinion",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { question, familyMemberId, chatHistory = [] } = req.body;
 
-app.post("/api/prescription/second-opinion", authMiddleware, async (req, res) => {
-  try {
-    const { question, familyMemberId, chatHistory = [] } = req.body;
+      // ── Fetch all records for context ──
+      const query = { user: req.user.id, archived: { $ne: true } };
+      if (familyMemberId) query.familyMember = familyMemberId;
+      const records = await Prescription.find(query)
+        .sort({ createdAt: -1 })
+        .limit(10);
 
-    // ── Fetch all records for context ──
-    const query = { user: req.user.id, archived: { $ne: true } };
-    if (familyMemberId) query.familyMember = familyMemberId;
-    const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10); 
-
-    // ── Build medical context from records ──
-    const context = records.map(r => {                                          
-      if (r.documentType === "prescription") {
-        return `
+      // ── Build medical context from records ──
+      const context = records
+        .map((r) => {
+          if (r.documentType === "prescription") {
+            return `
 Prescription (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 - Patient: ${r.patientInfo?.name || "Unknown"}
 - Doctor: ${r.doctorInfo?.name || "Unknown"} (${r.doctorInfo?.specialization || ""})
 - Diagnosis: ${r.diagnosis || "Not mentioned"}
 - Symptoms: ${r.symptoms?.join(", ") || "None"}
-- Medications: ${r.medications?.map(m => `${m.name} ${m.dosage || ""} ${m.frequency || ""}`).join(", ") || "None"}
+- Medications: ${r.medications?.map((m) => `${m.name} ${m.dosage || ""} ${m.frequency || ""}`).join(", ") || "None"}
 - Notes: ${r.additionalNotes || "None"}
         `.trim();
-      }
-      if (r.documentType === "lab_test") {
-        return `
+          }
+          if (r.documentType === "lab_test") {
+            return `
 Lab Test (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
-- Tests: ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status || "normal"})`).join(", ") || "None"}
+- Tests: ${r.tests?.map((t) => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status || "normal"})`).join(", ") || "None"}
 - Critical Values: ${r.criticalValues?.join(", ") || "None"}
 - Summary: ${r.summary || "None"}
         `.trim();
-      }
-      if (r.documentType === "radiology") {
-        return `
+          }
+          if (r.documentType === "radiology") {
+            return `
 Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 - Study: ${r.studyInfo?.studyType || "Scan"} - ${r.studyInfo?.bodyPart || ""}
 - Findings: ${r.findings || "None"}
 - Impression: ${r.impression || "None"}
         `.trim();
-      }
-    }).filter(Boolean).join("\n\n");
+          }
+        })
+        .filter(Boolean)
+        .join("\n\n");
 
-//     const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below. 
-// Always be clear, friendly, and easy to understand for a non-medical person.
-// Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
-// If the answer is not in the records, say "I don't see this in your records."
+      //     const systemPrompt = `You are a helpful medical assistant. You answer questions based ONLY on the patient's medical records provided below.
+      // Always be clear, friendly, and easy to understand for a non-medical person.
+      // Never diagnose or prescribe. Always end with "Please consult your doctor for medical advice."
+      // If the answer is not in the records, say "I don't see this in your records."
 
-// PATIENT MEDICAL RECORDS:
-// ${context || "No records found."}`;
+      // PATIENT MEDICAL RECORDS:
+      // ${context || "No records found."}`;
 
-    const systemPrompt = `You are a healthcare record assistant.
+      const systemPrompt = `You are a healthcare record assistant.
     Your primary responsibility is to analyze the patient's medical records.
 
     You may also use general medical knowledge when the user's question requires explanation, wellness guidance, risk awareness, or preventive health advice.
@@ -875,54 +970,56 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
     PATIENT MEDICAL RECORDS:
     ${context || "No records found."}`;
 
-    // ── Map Groq/OpenAI chat history format to Gemini SDK specifications ──
-    // Groq uses { role: "user" | "assistant", content: "..." }
-    // Gemini contents array expects { role: "user" | "model", parts: [{ text: "..." }] }
-    const formattedContents = chatHistory.map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }]
-    }));
+      // ── Map Groq/OpenAI chat history format to Gemini SDK specifications ──
+      // Groq uses { role: "user" | "assistant", content: "..." }
+      // Gemini contents array expects { role: "user" | "model", parts: [{ text: "..." }] }
+      const formattedContents = chatHistory.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
 
-    // Append the current fresh user question to the timeline array
-    formattedContents.push({
-      role: "user",
-      parts: [{ text: question }]
-    });
-
-    // ── Execute Chat Request with Gemini ──
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: formattedContents,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.3,
-        maxOutputTokens: 1500, // 🧠 Expanded slightly to let thorough multi-line explanations breathe
-      }
-    });
-
-    const answer = response.text || "I was unable to evaluate your records at this time. Please consult your doctor for medical advice.";
-
-    res.json({ success: true, answer });
-  } catch (err) {
-    // ── Map Gemini Specific Rate Limiting Error Codes ──
-    const isRateLimit =
-      err?.status === 429 ||
-      err?.response?.status === 429 ||
-      err?.message?.includes("429") ||
-      err?.message?.includes("RESOURCE_EXHAUSTED");
-
-    if (isRateLimit) {
-      return res.status(429).json({
-        success: false,
-        message: "Too many requests. Please wait before asking again.",
-        retryAfter: 30,
+      // Append the current fresh user question to the timeline array
+      formattedContents.push({
+        role: "user",
+        parts: [{ text: question }],
       });
-    }
 
-    console.error("Second opinion error:", err);
-    res.status(500).json({ error: "Failed to get second opinion" });
-  }
-}
+      // ── Execute Chat Request with Gemini ──
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: formattedContents,
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.3,
+          maxOutputTokens: 1500, // 🧠 Expanded slightly to let thorough multi-line explanations breathe
+        },
+      });
+
+      const answer =
+        response.text ||
+        "I was unable to evaluate your records at this time. Please consult your doctor for medical advice.";
+
+      res.json({ success: true, answer });
+    } catch (err) {
+      // ── Map Gemini Specific Rate Limiting Error Codes ──
+      const isRateLimit =
+        err?.status === 429 ||
+        err?.response?.status === 429 ||
+        err?.message?.includes("429") ||
+        err?.message?.includes("RESOURCE_EXHAUSTED");
+
+      if (isRateLimit) {
+        return res.status(429).json({
+          success: false,
+          message: "Too many requests. Please wait before asking again.",
+          retryAfter: 30,
+        });
+      }
+
+      console.error("Second opinion error:", err);
+      res.status(500).json({ error: "Failed to get second opinion" });
+    }
+  },
 );
 
 // app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
@@ -998,11 +1095,11 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 // - Warnings: ${warnings.join(", ") || "None"}
 // - Total Records: ${records.length}
 
-// Write a detailed, warm, and friendly patient health overview summary paragraph based ONLY on the data provided above. 
+// Write a detailed, warm, and friendly patient health overview summary paragraph based ONLY on the data provided above.
 // Requirements:
 // 1. It MUST be exactly 3 to 4 complete sentences long.
 // 2. Provide a thorough summary of their active medications, any abnormal results, and next steps mentioned.
-// 3. Do NOT provide medical advice. 
+// 3. Do NOT provide medical advice.
 // 4. Output your response as standard, raw, plain text. Do NOT wrap it in JSON structure, do NOT use markdown, and do NOT use backticks.`,
 //         config: {
 //           systemInstruction: "You are a professional medical assistant writing an overview for a patient dashboard profile. Write exactly 3 to 4 long, complete, comprehensive sentences. Never stop writing mid-sentence or truncate the text.",
@@ -1010,7 +1107,7 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 //           maxOutputTokens: 600, // 🧠 Significantly bumped to guarantee 3-4 full sentences fit with room to spare
 //         },
 //       });
-      
+
 //       // Clean up the text response completely to bypass any broken parsing filters
 //       if (summaryRes.text) {
 //         aiSummary = summaryRes.text
@@ -1037,7 +1134,6 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 //         return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
 //       }
 //     }).filter(Boolean).join("\n");
-
 
 //     // ── AI Health Trends (Enforced Strict JSON Schema) ──
 //     let trends = [];
@@ -1086,7 +1182,6 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 //       trends = [];
 //     }
 
-
 //     // ── Detailed summary (3 pillars Enforced Strict JSON Schema) ──
 //     let detailedSummary = { activeFocus: "", chronicManagement: "", generalOutlook: "" };
 //     try {
@@ -1128,7 +1223,6 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 //       console.error("Gemini detailed summary structure failure:", err);
 //     }
 
-
 //     // ── Extract structural relational entities ──
 //     const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(0, 5);
 
@@ -1162,151 +1256,197 @@ Radiology (${new Date(r.createdAt).toLocaleDateString("en-IN")}):
 //   }
 // });
 
-app.get("/api/prescription/member-profile", authMiddleware, async (req, res) => {
-  try {
-    const query = { user: req.user.id, archived: { $ne: true } };
-    const familyMemberId = req.query.familyMemberId || null;
-    if (familyMemberId) query.familyMember = familyMemberId;
-
-    const records = await Prescription.find(query).sort({ createdAt: -1 });
-
-    // ── Extract basic health info from latest 3 records ──
-    const basicHealthInfo = {
-      age: null,
-      gender: null,
-      weight: null,
-      bloodGroup: null,
-      allergies: [],
-    };
-
-    const latest3 = records.slice(0, 3);
-
-    for (const r of latest3) {
-      if (!basicHealthInfo.age && r.patientInfo?.age) 
-        basicHealthInfo.age = r.patientInfo.age;
-      if (!basicHealthInfo.gender && r.patientInfo?.gender) 
-        basicHealthInfo.gender = r.patientInfo.gender;
-      if (!basicHealthInfo.weight && r.patientInfo?.weight) 
-        basicHealthInfo.weight = r.patientInfo.weight;
-      if (!basicHealthInfo.bloodGroup && r.patientInfo?.bloodGroup) 
-        basicHealthInfo.bloodGroup = r.patientInfo.bloodGroup;
-      if (!basicHealthInfo.allergies.length && r.warnings?.length) 
-        basicHealthInfo.allergies = r.warnings;
-
-      // Stop early if all fields found
-      const allFound = basicHealthInfo.age && basicHealthInfo.gender && 
-                      basicHealthInfo.weight && basicHealthInfo.bloodGroup;
-      if (allFound) break;
-    }
-
-    // ── Documents list (always fresh, no AI needed) ──
-    const documents = records.map(r => {
-      if (r.documentType === "prescription") {
-        const firstMed = r.medications?.[0];
-        return {
-          _id: r._id, type: "prescription", icon: "pill",
-          title: firstMed ? `${firstMed.name}${firstMed.frequency ? " — " + firstMed.frequency : ""}` : "Prescription",
-          subtitle: `${r.patientInfo?.date ? formatDate(r.patientInfo.date) : formatDate(r.createdAt)} · ${r.doctorInfo?.name || ""}`,
-          tag: r.followUpDate ? `Refill ${formatDate(r.followUpDate)}` : null,
-          tagColor: "#e8f5e9", tagTextColor: "#2e7d32", createdAt: r.createdAt,
-        };
-      }
-      if (r.documentType === "lab_test") {
-        const allNormal = r.tests?.every(t => t.status === "normal");
-        const critical  = r.tests?.some(t => t.status === "critical");
-        const firstTest = r.tests?.[0];
-        return {
-          _id: r._id, type: "lab_test", icon: "flask",
-          title: firstTest?.testName || r.labInfo?.labName || "Lab Report",
-          subtitle: `${formatDate(r.createdAt)} · ${r.labInfo?.labName || ""}`,
-          tag: critical ? "Critical ⚠️" : allNormal ? "All normal ✓" : "Review needed",
-          tagColor: critical ? "#fef2f2" : allNormal ? "#f1f8e9" : "#fffde7",
-          tagTextColor: critical ? "#c62828" : allNormal ? "#388e3c" : "#f57f17",
-          createdAt: r.createdAt,
-        };
-      }
-      if (r.documentType === "radiology") {
-        return {
-          _id: r._id, type: "radiology", icon: "scan",
-          title: `${r.studyInfo?.studyType || "Radiology"} — ${r.studyInfo?.bodyPart || ""}`,
-          subtitle: formatDate(r.createdAt), tag: null, createdAt: r.createdAt,
-        };
-      }
-      return null;
-    }).filter(Boolean);
-
-    const currentCount = records.length;
-
-    // ── Check cache ──
-    const cacheKey = {
-      user: req.user.id,
-      familyMember: familyMemberId,
-    };
-
-    const existingCache = await MemberProfileCache.findOne(cacheKey);
-
-    // ── Cache HIT: same document count → return cached AI data ──
-    if (existingCache && existingCache.documentCount === currentCount) {
-      console.log("✅ Cache hit — skipping Gemini calls");
-      return res.json({
-        success: true,
-        cached: true,
-        data: {
-          totalRecords:      currentCount,
-          basicHealthInfo,  
-          aiSummary:         existingCache.aiSummary,
-          detailedSummary:   existingCache.detailedSummary,
-          chronicConditions: existingCache.chronicConditions,
-          activeMeds:        existingCache.activeMeds,
-          latestLabs:        existingCache.latestLabs,
-          trends:            existingCache.trends,
-          documents,
-        },
-      });
-    }
-
-    // ── Cache MISS or stale: run Gemini, then save ──
-    console.log("♻️ Cache miss — calling Gemini");
-
-    // ── Build context for AI ──
-    const medications   = [];
-    const diagnoses     = [];
-    const warnings      = [];
-    const abnormalTests = [];
-
-    records.forEach(r => {
-      if (r.documentType === "prescription") {
-        r.medications?.forEach(m => { if (m.name) medications.push(m.name); });
-        if (r.diagnosis) diagnoses.push(r.diagnosis);
-        r.warnings?.forEach(w => warnings.push(w));
-      }
-      if (r.documentType === "lab_test") {
-        r.tests?.filter(t => t.status !== "normal")
-          .forEach(t => abnormalTests.push(`${t.testName} (${t.status})`));
-        r.criticalValues?.forEach(v => warnings.push(v));
-      }
-    });
-
-    // ── recordsSummary (last 5 only) ──
-    const recordsSummary = records.slice(0, 5).map(r => {
-      if (r.documentType === "lab_test") {
-        return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map(t => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
-      }
-      if (r.documentType === "prescription") {
-        return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map(m => m.name).join(", ")}`;
-      }
-      if (r.documentType === "radiology") {
-        return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
-      }
-      return null;
-    }).filter(Boolean).join("\n");
-
-    // ── AI Summary ──
-    let aiSummary = "";
+app.get(
+  "/api/prescription/member-profile",
+  authMiddleware,
+  async (req, res) => {
     try {
-      const summaryRes = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `Review the following medical data summary:
+      const query = { user: req.user.id, archived: { $ne: true } };
+      const familyMemberId = req.query.familyMemberId || null;
+      if (familyMemberId) query.familyMember = familyMemberId;
+
+      const records = await Prescription.find(query).sort({ createdAt: -1 });
+
+      const memberData = await FamilyMember.findOne({
+        _id: familyMemberId,
+        user: req.user.id,
+      });
+      
+      // ── Extract basic health info from latest 3 records ──
+      const basicHealthInfo = {
+        age: memberData.age || null,
+        gender: memberData.gender || null,
+        weight: memberData.weight || null,
+        bloodGroup:memberData.blood_group || null,
+        allergies: [],
+      };
+
+      const latest3 = records.slice(0, 3);
+
+      for (const r of latest3) {
+        if (!basicHealthInfo.age && r.patientInfo?.age)
+          basicHealthInfo.age = r.patientInfo.age;
+        if (!basicHealthInfo.gender && r.patientInfo?.gender)
+          basicHealthInfo.gender = r.patientInfo.gender;
+        if (!basicHealthInfo.weight && r.patientInfo?.weight)
+          basicHealthInfo.weight = r.patientInfo.weight;
+        if (!basicHealthInfo.bloodGroup && r.patientInfo?.bloodGroup)
+          basicHealthInfo.bloodGroup = r.patientInfo.bloodGroup;
+        if (!basicHealthInfo.allergies.length && r.warnings?.length)
+          basicHealthInfo.allergies = r.warnings;
+
+        // Stop early if all fields found
+        const allFound =
+          basicHealthInfo.age &&
+          basicHealthInfo.gender &&
+          basicHealthInfo.weight &&
+          basicHealthInfo.bloodGroup;
+        if (allFound) break;
+      }
+
+      // ── Documents list (always fresh, no AI needed) ──
+      const documents = records
+        .map((r) => {
+          if (r.documentType === "prescription") {
+            const firstMed = r.medications?.[0];
+            return {
+              _id: r._id,
+              type: "prescription",
+              icon: "pill",
+              title: firstMed
+                ? `${firstMed.name}${firstMed.frequency ? " — " + firstMed.frequency : ""}`
+                : "Prescription",
+              subtitle: `${r.patientInfo?.date ? formatDate(r.patientInfo.date) : formatDate(r.createdAt)} · ${r.doctorInfo?.name || ""}`,
+              tag: r.followUpDate
+                ? `Refill ${formatDate(r.followUpDate)}`
+                : null,
+              tagColor: "#e8f5e9",
+              tagTextColor: "#2e7d32",
+              createdAt: r.createdAt,
+            };
+          }
+          if (r.documentType === "lab_test") {
+            const allNormal = r.tests?.every((t) => t.status === "normal");
+            const critical = r.tests?.some((t) => t.status === "critical");
+            const firstTest = r.tests?.[0];
+            return {
+              _id: r._id,
+              type: "lab_test",
+              icon: "flask",
+              title: firstTest?.testName || r.labInfo?.labName || "Lab Report",
+              subtitle: `${formatDate(r.createdAt)} · ${r.labInfo?.labName || ""}`,
+              tag: critical
+                ? "Critical ⚠️"
+                : allNormal
+                  ? "All normal ✓"
+                  : "Review needed",
+              tagColor: critical
+                ? "#fef2f2"
+                : allNormal
+                  ? "#f1f8e9"
+                  : "#fffde7",
+              tagTextColor: critical
+                ? "#c62828"
+                : allNormal
+                  ? "#388e3c"
+                  : "#f57f17",
+              createdAt: r.createdAt,
+            };
+          }
+          if (r.documentType === "radiology") {
+            return {
+              _id: r._id,
+              type: "radiology",
+              icon: "scan",
+              title: `${r.studyInfo?.studyType || "Radiology"} — ${r.studyInfo?.bodyPart || ""}`,
+              subtitle: formatDate(r.createdAt),
+              tag: null,
+              createdAt: r.createdAt,
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
+
+      const currentCount = records.length;
+
+      // ── Check cache ──
+      const cacheKey = {
+        user: req.user.id,
+        familyMember: familyMemberId,
+      };
+
+      const existingCache = await MemberProfileCache.findOne(cacheKey);
+
+      // ── Cache HIT: same document count → return cached AI data ──
+      if (existingCache && existingCache.documentCount === currentCount) {
+        console.log("✅ Cache hit — skipping Gemini calls");
+        return res.json({
+          success: true,
+          cached: true,
+          data: {
+            totalRecords: currentCount,
+            basicHealthInfo,
+            aiSummary: existingCache.aiSummary,
+            detailedSummary: existingCache.detailedSummary,
+            chronicConditions: existingCache.chronicConditions,
+            activeMeds: existingCache.activeMeds,
+            latestLabs: existingCache.latestLabs,
+            trends: existingCache.trends,
+            documents,
+          },
+        });
+      }
+
+      // ── Cache MISS or stale: run Gemini, then save ──
+      console.log("♻️ Cache miss — calling Gemini");
+
+      // ── Build context for AI ──
+      const medications = [];
+      const diagnoses = [];
+      const warnings = [];
+      const abnormalTests = [];
+
+      records.forEach((r) => {
+        if (r.documentType === "prescription") {
+          r.medications?.forEach((m) => {
+            if (m.name) medications.push(m.name);
+          });
+          if (r.diagnosis) diagnoses.push(r.diagnosis);
+          r.warnings?.forEach((w) => warnings.push(w));
+        }
+        if (r.documentType === "lab_test") {
+          r.tests
+            ?.filter((t) => t.status !== "normal")
+            .forEach((t) => abnormalTests.push(`${t.testName} (${t.status})`));
+          r.criticalValues?.forEach((v) => warnings.push(v));
+        }
+      });
+
+      // ── recordsSummary (last 5 only) ──
+      const recordsSummary = records
+        .slice(0, 5)
+        .map((r) => {
+          if (r.documentType === "lab_test") {
+            return `Lab Test (${formatDate(r.createdAt)}): ${r.tests?.map((t) => `${t.testName}: ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
+          }
+          if (r.documentType === "prescription") {
+            return `Prescription (${formatDate(r.createdAt)}): Diagnosis: ${r.diagnosis || "unknown"}, Meds: ${r.medications?.map((m) => m.name).join(", ")}`;
+          }
+          if (r.documentType === "radiology") {
+            return `Radiology (${formatDate(r.createdAt)}): ${r.studyInfo?.studyType} - ${r.findings || ""}`;
+          }
+          return null;
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      // ── AI Summary ──
+      let aiSummary = "";
+      try {
+        const summaryRes = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Review the following medical data summary:
 - Medications: ${medications.join(", ") || "None"}
 - Diagnoses: ${diagnoses.join(", ") || "None"}
 - Abnormal Tests: ${abnormalTests.join(", ") || "None"}
@@ -1319,26 +1459,31 @@ Requirements:
 2. Provide a thorough summary of their active medications, any abnormal results, and next steps mentioned.
 3. Do NOT provide medical advice.
 4. Output your response as standard, raw, plain text. Do NOT wrap it in JSON structure, do NOT use markdown, and do NOT use backticks.`,
-        config: {
-          systemInstruction: "You are a professional medical assistant writing an overview for a patient dashboard profile. Write exactly 3 to 4 long, complete, comprehensive sentences. Never stop writing mid-sentence or truncate the text.",
-          temperature: 0.5,
-          maxOutputTokens: 8192,
-        },
-      });
-      aiSummary = summaryRes.text
-        ? summaryRes.text.replace(/```json/gi, "").replace(/```/g, "").trim()
-        : "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
-    } catch (err) {
-      console.error("Gemini summary error:", err);
-      aiSummary = "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
-    }
+          config: {
+            systemInstruction:
+              "You are a professional medical assistant writing an overview for a patient dashboard profile. Write exactly 3 to 4 long, complete, comprehensive sentences. Never stop writing mid-sentence or truncate the text.",
+            temperature: 0.5,
+            maxOutputTokens: 8192,
+          },
+        });
+        aiSummary = summaryRes.text
+          ? summaryRes.text
+              .replace(/```json/gi, "")
+              .replace(/```/g, "")
+              .trim()
+          : "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
+      } catch (err) {
+        console.error("Gemini summary error:", err);
+        aiSummary =
+          "Welcome to your health dashboard. Your active records, medication schedules, and laboratory updates are compiled below for your review.";
+      }
 
-    // ── AI Trends ──
-    let trends = [];
-    try {
-      const trendsRes = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
+      // ── AI Trends ──
+      let trends = [];
+      try {
+        const trendsRes = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Based on these medical records, extract up to 3 most important health metrics to show as trend cards.
 Only include metrics that actually have numeric values in the records.
 
 Records:
@@ -1348,25 +1493,32 @@ Respond ONLY with a valid JSON array, no explanation, no markdown backticks:
 [{"name":"Cholesterol","latestValue":"218","unit":"mg/dL","trend":"down","change":"↓ 12"},...]
 
 If no numeric metrics found, respond with: []`,
-        config: { temperature: 0.1, maxOutputTokens: 8192 },
-      });
-      const raw = trendsRes.text?.trim() ?? "";
-      const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-      const parsed = JSON.parse(cleaned);
-      trends = Array.isArray(parsed) ? parsed : [];
-    } catch (err) {
-      console.error("Gemini trends error:", err);
-      trends = [];
-    }
+          config: { temperature: 0.1, maxOutputTokens: 8192 },
+        });
+        const raw = trendsRes.text?.trim() ?? "";
+        const cleaned = raw
+          .replace(/```json/gi, "")
+          .replace(/```/g, "")
+          .trim();
+        const parsed = JSON.parse(cleaned);
+        trends = Array.isArray(parsed) ? parsed : [];
+      } catch (err) {
+        console.error("Gemini trends error:", err);
+        trends = [];
+      }
 
-    console.log("trends before save:", JSON.stringify(trends));
+      console.log("trends before save:", JSON.stringify(trends));
 
-    // ── AI Detailed Summary ──
-    let detailedSummary = { activeFocus: "", chronicManagement: "", generalOutlook: "" };
-    try {
-      const detailedRes = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
+      // ── AI Detailed Summary ──
+      let detailedSummary = {
+        activeFocus: "",
+        chronicManagement: "",
+        generalOutlook: "",
+      };
+      try {
+        const detailedRes = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Based on these medical records, write 3 separate clinical summaries in factual language (not advisory).
         Records:
         ${recordsSummary || "No records"}
 
@@ -1376,93 +1528,123 @@ If no numeric metrics found, respond with: []`,
           "chronicManagement": "...",
           "generalOutlook": "..."
         }`,
-        config: { temperature: 0.3, maxOutputTokens: 8192 },
-      });
-      const raw = detailedRes.text?.trim() ?? "";
-      const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
-      detailedSummary = JSON.parse(cleaned);
-    } catch (err) {
-      console.error("Gemini detailed summary error:", err);
-    }
+          config: { temperature: 0.3, maxOutputTokens: 8192 },
+        });
+        const raw = detailedRes.text?.trim() ?? "";
+        const cleaned = raw
+          .replace(/```json/gi, "")
+          .replace(/```/g, "")
+          .trim();
+        detailedSummary = JSON.parse(cleaned);
+      } catch (err) {
+        console.error("Gemini detailed summary error:", err);
+      }
 
-    // ── Structured data (no AI needed) ──
-    const chronicConditions = [...new Set(diagnoses.filter(d => d))].slice(0, 5);
+      // ── Structured data (no AI needed) ──
+      const chronicConditions = [...new Set(diagnoses.filter((d) => d))].slice(
+        0,
+        5,
+      );
 
-    const activeMeds = records
-      .filter(r => r.documentType === "prescription")
-      .flatMap(r => r.medications?.map(m => ({
-        name: m.name, frequency: m.frequency, doctor: r.doctorInfo?.name,
-      })) || [])
-      .slice(0, 5);
+      const activeMeds = records
+        .filter((r) => r.documentType === "prescription")
+        .flatMap(
+          (r) =>
+            r.medications?.map((m) => ({
+              name: m.name,
+              frequency: m.frequency,
+              doctor: r.doctorInfo?.name,
+            })) || [],
+        )
+        .slice(0, 5);
 
-    const latestLabs = records
-      .filter(r => r.documentType === "lab_test")
-      .flatMap(r => r.tests?.map(t => ({
-        testName: t.testName, value: t.value, unit: t.unit, status: t.status,
-      })) || [])
-      .slice(0, 5);
+      const latestLabs = records
+        .filter((r) => r.documentType === "lab_test")
+        .flatMap(
+          (r) =>
+            r.tests?.map((t) => ({
+              testName: t.testName,
+              value: t.value,
+              unit: t.unit,
+              status: t.status,
+            })) || [],
+        )
+        .slice(0, 5);
 
-    // ── Save/update cache ──
-    await MemberProfileCache.findOneAndUpdate(
-      cacheKey,
-      {
-        $set: {
-          documentCount:     currentCount,
+      // ── Save/update cache ──
+      await MemberProfileCache.findOneAndUpdate(
+        cacheKey,
+        {
+          $set: {
+            documentCount: currentCount,
+            aiSummary,
+            detailedSummary,
+            trends,
+            chronicConditions,
+            activeMeds,
+            latestLabs,
+          },
+        },
+        { upsert: true, new: true },
+      );
+      console.log("💾 Cache saved for", cacheKey);
+
+      res.json({
+        success: true,
+        cached: false,
+        data: {
+          totalRecords: currentCount,
           aiSummary,
           detailedSummary,
-          trends,
           chronicConditions,
           activeMeds,
           latestLabs,
+          trends,
+          documents,
         },
-      },
-      { upsert: true, new: true }
-    );
-    console.log("💾 Cache saved for", cacheKey);
-
-    res.json({
-      success: true,
-      cached: false,
-      data: {
-        totalRecords: currentCount,
-        aiSummary,
-        detailedSummary,
-        chronicConditions,
-        activeMeds,
-        latestLabs,
-        trends,
-        documents,
-      },
-    });
-
-  } catch (err) {
-    console.error("Member profile error:", err);
-    res.status(500).json({ error: "Failed to load profile" });
-  }
-});
+      });
+    } catch (err) {
+      console.error("Member profile error:", err);
+      res.status(500).json({ error: "Failed to load profile" });
+    }
+  },
+);
 
 function formatDate(dateStr) {
   if (!dateStr) return "";
-  return new Date(dateStr).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  return new Date(dateStr).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+  });
 }
 
 // ── Get archived records ──
 app.get("/api/prescription/archived", authMiddleware, async (req, res) => {
   try {
-    console.log("fetching archived records for user", req.user.id, "familyMemberId:", req.query.familyMemberId);
+    console.log(
+      "fetching archived records for user",
+      req.user.id,
+      "familyMemberId:",
+      req.query.familyMemberId,
+    );
     const query = { user: req.user.id, archived: true };
     if (req.query.familyMemberId) query.familyMember = req.query.familyMemberId;
     const records = await Prescription.find(query).sort({ archivedAt: -1 });
     res.json({ success: true, data: records });
   } catch (err) {
     console.log("error coming ;;;;;", err);
-    res.status(500).json({ error: err.message, description: "Failed to fetch archived" });
+    res
+      .status(500)
+      .json({ error: err.message, description: "Failed to fetch archived" });
   }
 });
 
 app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
   try {
-    const record = await Prescription.findOne({ _id: req.params.id, user: req.user.id });
+    const record = await Prescription.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
     if (!record) return res.status(404).json({ error: "Not found" });
     res.json({ success: true, data: record });
   } catch (err) {
@@ -1470,20 +1652,24 @@ app.get("/api/prescription/:id", authMiddleware, async (req, res) => {
   }
 });
 
-app.patch("/api/prescription/:id/transfer", authMiddleware, async (req, res) => {
-  try {
-    const { familyMemberId } = req.body;
-    const record = await Prescription.findOneAndUpdate(
-      { _id: req.params.id, user: req.user.id },
-      { familyMember: familyMemberId || null },
-      { new: true }
-    );
-    if (!record) return res.status(404).json({ error: "Not found" });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to transfer" });
-  }
-});
+app.patch(
+  "/api/prescription/:id/transfer",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { familyMemberId } = req.body;
+      const record = await Prescription.findOneAndUpdate(
+        { _id: req.params.id, user: req.user.id },
+        { familyMember: familyMemberId || null },
+        { new: true },
+      );
+      if (!record) return res.status(404).json({ error: "Not found" });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to transfer" });
+    }
+  },
+);
 
 // app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
 //   try {
@@ -1543,69 +1729,86 @@ app.patch("/api/prescription/:id/transfer", authMiddleware, async (req, res) => 
 //   }
 // });
 
-app.post("/api/prescription/suggested-questions", authMiddleware, async (req, res) => {
-  try {
-    const query = { user: req.user.id, archived: { $ne: true } };
-    if (req.body.familyMemberId) query.familyMember = req.body.familyMemberId;
-
-    const records = await Prescription.find(query).sort({ createdAt: -1 }).limit(10);
-
-    if (!records.length) {
-      return res.json({
-        success: true,
-        questions: ["What should I know about my health?", "How can I improve my health?"]
-      });
-    }
-
-    // ── Build context ──
-    const context = records.map(r => {
-      if (r.documentType === "prescription")
-        return `Prescription: Meds: ${r.medications?.map(m => m.name).join(", ")}, Diagnosis: ${r.diagnosis || "unknown"}`;
-      if (r.documentType === "lab_test")
-        return `Lab Test: ${r.tests?.map(t => `${t.testName} ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
-      if (r.documentType === "radiology")
-        return `Radiology: ${r.studyInfo?.studyType || "Scan"} - ${r.studyInfo?.bodyPart || ""}`;
-    }).filter(Boolean).join("\n");
-
-    let questions = [];
+app.post(
+  "/api/prescription/suggested-questions",
+  authMiddleware,
+  async (req, res) => {
     try {
-      // ── Call Gemini with Strict Structured Array Schema ──
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: `Based on this patient's medical records, generate exactly 4 short, highly specific questions the patient should ask their doctor about their health. The questions must be tailored to the actual medications, abnormal labs, or conditions visible in the data.\n\nRecords:\n${context}`,
-        config: {
-          systemInstruction: "You are an empathetic medical AI assistant helping a patient prepare for their doctor appointment. Generate exactly 4 short, actionable questions. Never use markdown formatting, backticks, or write conversational explanations.",
-          temperature: 0.5,
-          maxOutputTokens: 300,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            description: "A simple list containing exactly 4 string elements representing patient health questions.",
-            items: {
-              type: Type.STRING
-            }
-          }
-        },
-      });
+      const query = { user: req.user.id, archived: { $ne: true } };
+      if (req.body.familyMemberId) query.familyMember = req.body.familyMemberId;
 
-      questions = JSON.parse(response.text);
-    } catch (aiErr) {
-      console.error("Gemini failed to generate structured questions array:", aiErr);
-      // Clean fallback if anything unexpected happens during API execution
-      questions = [
-        "What do my recent test results mean for my long-term health?",
-        "Are there any interactions or side effects I should watch out for with my current medications?",
-        "What follow-up scans or appointments should I schedule next?",
-        "Are there any specific lifestyle modifications you recommend based on my records?"
-      ];
+      const records = await Prescription.find(query)
+        .sort({ createdAt: -1 })
+        .limit(10);
+
+      if (!records.length) {
+        return res.json({
+          success: true,
+          questions: [
+            "What should I know about my health?",
+            "How can I improve my health?",
+          ],
+        });
+      }
+
+      // ── Build context ──
+      const context = records
+        .map((r) => {
+          if (r.documentType === "prescription")
+            return `Prescription: Meds: ${r.medications?.map((m) => m.name).join(", ")}, Diagnosis: ${r.diagnosis || "unknown"}`;
+          if (r.documentType === "lab_test")
+            return `Lab Test: ${r.tests?.map((t) => `${t.testName} ${t.value} ${t.unit || ""} (${t.status})`).join(", ")}`;
+          if (r.documentType === "radiology")
+            return `Radiology: ${r.studyInfo?.studyType || "Scan"} - ${r.studyInfo?.bodyPart || ""}`;
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      let questions = [];
+      try {
+        // ── Call Gemini with Strict Structured Array Schema ──
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: `Based on this patient's medical records, generate exactly 4 short, highly specific questions the patient should ask their doctor about their health. The questions must be tailored to the actual medications, abnormal labs, or conditions visible in the data.\n\nRecords:\n${context}`,
+          config: {
+            systemInstruction:
+              "You are an empathetic medical AI assistant helping a patient prepare for their doctor appointment. Generate exactly 4 short, actionable questions. Never use markdown formatting, backticks, or write conversational explanations.",
+            temperature: 0.5,
+            maxOutputTokens: 300,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              description:
+                "A simple list containing exactly 4 string elements representing patient health questions.",
+              items: {
+                type: Type.STRING,
+              },
+            },
+          },
+        });
+
+        questions = JSON.parse(response.text);
+      } catch (aiErr) {
+        console.error(
+          "Gemini failed to generate structured questions array:",
+          aiErr,
+        );
+        // Clean fallback if anything unexpected happens during API execution
+        questions = [
+          "What do my recent test results mean for my long-term health?",
+          "Are there any interactions or side effects I should watch out for with my current medications?",
+          "What follow-up scans or appointments should I schedule next?",
+          "Are there any specific lifestyle modifications you recommend based on my records?",
+        ];
+      }
+
+      res.json({ success: true, questions });
+    } catch (err) {
+      console.error("Suggested questions error:", err);
+      res.status(500).json({ error: "Failed to generate questions" });
     }
-
-    res.json({ success: true, questions });
-  } catch (err) {
-    console.error("Suggested questions error:", err);
-    res.status(500).json({ error: "Failed to generate questions" });
-  }
-});
+  },
+);
 
 async function extractTextFromPdf(pdfBuffer) {
   const pdfjsLib = require("pdfjs-dist/build/pdf.js");
@@ -1625,7 +1828,7 @@ async function extractTextFromPdf(pdfBuffer) {
   for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
     const page = await pdfDoc.getPage(pageNum);
     const textContent = await page.getTextContent();
-    const pageText = textContent.items.map(item => item.str).join(" ");
+    const pageText = textContent.items.map((item) => item.str).join(" ");
     fullText += `\n--- Page ${pageNum} ---\n${pageText}`;
   }
 
@@ -1645,7 +1848,9 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     let pdfScanResults = [];
     if (pdfs && pdfs.length > 0) {
       if (pdfs.length > 2) {
-        return res.status(400).json({ error: "Maximum 2 PDFs allowed per scan" });
+        return res
+          .status(400)
+          .json({ error: "Maximum 2 PDFs allowed per scan" });
       }
 
       pdfScanResults = await Promise.all(
@@ -1657,23 +1862,27 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
           // Add this validation
           console.log("PDF buffer size:", pdfBuffer.length);
           if (pdfBuffer.length < 1000) {
-            throw new Error("PDF buffer too small — base64 decode likely failed");
+            throw new Error(
+              "PDF buffer too small — base64 decode likely failed",
+            );
           }
 
           // Upload PDF to Cloudinary
           const uploadResult = await new Promise((resolve, reject) => {
             const uniqueName = `pdf_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            
-            cloudinary.uploader.upload_stream(
-              { 
-                folder: "prescriptions", 
-                resource_type: "raw",
-                public_id: uniqueName,
-                format: "pdf",                          // ← force PDF format
-                type: "upload",
-              },
-              (error, result) => error ? reject(error) : resolve(result)
-            ).end(pdfBuffer);
+
+            cloudinary.uploader
+              .upload_stream(
+                {
+                  folder: "prescriptions",
+                  resource_type: "raw",
+                  public_id: uniqueName,
+                  format: "pdf", // ← force PDF format
+                  type: "upload",
+                },
+                (error, result) => (error ? reject(error) : resolve(result)),
+              )
+              .end(pdfBuffer);
           });
           const pdfUrl = uploadResult.secure_url;
 
@@ -1684,7 +1893,7 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
           // Analyze text only (no image)
           const result = await analyzeTextOnly(pdfText);
           return { result, imagePath: pdfUrl };
-        })
+        }),
       );
     }
 
@@ -1693,7 +1902,9 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "At least one image is required" });
     }
     if (imageList.length > 5) {
-      return res.status(400).json({ error: "Maximum 5 images allowed per scan" });
+      return res
+        .status(400)
+        .json({ error: "Maximum 5 images allowed per scan" });
     }
 
     const userFolder = path.join(UPLOAD_DIR, req.user.id.toString());
@@ -1718,12 +1929,12 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         // console.log("process image ;;;;;;", processedImage);
 
         // Step 2: OCR (NEW)
-      const { text: ocrText, confidence: ocrConfidence } =
-        await extractTextFromImage(processedImage);
+        const { text: ocrText, confidence: ocrConfidence } =
+          await extractTextFromImage(processedImage);
 
-      console.log("🧾 OCR TEXT:", ocrText);
+        console.log("🧾 OCR TEXT:", ocrText);
 
-      // return res.send(ocrText);
+        // return res.send(ocrText);
 
         // return;
         // const result = await analyzePrescription(processedImage, mimeType,  ocrText);
@@ -1738,14 +1949,17 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
         // };
 
         try {
-          const result = await analyzePrescription(processedImage, mimeType, ocrText);
+          const result = await analyzePrescription(
+            processedImage,
+            mimeType,
+            ocrText,
+          );
 
           return {
             result,
             imagePath: imageUrl,
             imageBuffer,
           };
-
         } catch (err) {
           const isRateLimit =
             err?.status === 429 ||
@@ -1756,17 +1970,18 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
             return {
               error: true,
               type: "RATE_LIMIT",
-              message: "Rate limit reached. Please try again after a few seconds.",
-              retryAfter: 60 // seconds (you can tune this)
+              message:
+                "Rate limit reached. Please try again after a few seconds.",
+              retryAfter: 60, // seconds (you can tune this)
             };
           }
 
           throw err;
         }
-      })
+      }),
     );
 
-    const rateLimitError = scanResults.find(r => r?.error);
+    const rateLimitError = scanResults.find((r) => r?.error);
 
     if (rateLimitError) {
       return res.status(429).json({
@@ -1779,129 +1994,139 @@ app.post("/api/prescription/scan-base64", authMiddleware, async (req, res) => {
     // After mergeResults...
     // const merged = mergeResults(scanResults.map(s => s.result));
     // console.log("merge result coming ;;;;;", merged);
-    const imagePaths = scanResults.map(s => s.imagePath);
+    const imagePaths = scanResults.map((s) => s.imagePath);
     // Save one record per page
 
     // const merged = mergeResults(scanResults.map(s => s.result));
     const allScanResults = [...scanResults, ...pdfScanResults];
-    const merged = mergeResults(allScanResults.map(s => s.result));
+    const merged = mergeResults(allScanResults.map((s) => s.result));
 
-  // const savedRecords = await Promise.all(
-  //   allScanResults.map(async (scanResult, index) => {
-  //     const result = scanResult.result;
+    // const savedRecords = await Promise.all(
+    //   allScanResults.map(async (scanResult, index) => {
+    //     const result = scanResult.result;
 
-  //     const dbData = {
-  //       user:            req.user.id,
-  //       documentType:    result.documentType,
-  //       imagePaths:      [scanResult.imagePath],
-  //       imagePath:       scanResult.imagePath,
-  //       pageCount:       1,
-  //       patientInfo:     result.patientInfo,
-  //       // additionalNotes: result.additionalNotes,
-  //       additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : result.additionalNotes,
-  //       confidence:      result.confidence,
-  //       warnings:        result.warnings,
-  //       // advice:        result.advice,
-  //       advice:        Array.isArray(result.advice) ? result.advice.join(". ") : result.advice,
-  //       meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
-  //       patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
-  //     };
+    //     const dbData = {
+    //       user:            req.user.id,
+    //       documentType:    result.documentType,
+    //       imagePaths:      [scanResult.imagePath],
+    //       imagePath:       scanResult.imagePath,
+    //       pageCount:       1,
+    //       patientInfo:     result.patientInfo,
+    //       // additionalNotes: result.additionalNotes,
+    //       additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : result.additionalNotes,
+    //       confidence:      result.confidence,
+    //       warnings:        result.warnings,
+    //       // advice:        result.advice,
+    //       advice:        Array.isArray(result.advice) ? result.advice.join(". ") : result.advice,
+    //       meta: { processingTime: Date.now() - req.startTime, pageIndex: index },
+    //       patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"), // ← add this
+    //     };
 
-  //     // Add type-specific fields
-  //     if (result.documentType === "prescription") {
-  //       dbData.doctorInfo  = result.doctorInfo;
-  //       dbData.medications = result.medications;
-  //       dbData.diagnosis   = result.diagnosis;
-  //       dbData.symptoms   = result.symptoms;
-  //       dbData.followUpDate   = result.followUpDate;
-  //     }
+    //     // Add type-specific fields
+    //     if (result.documentType === "prescription") {
+    //       dbData.doctorInfo  = result.doctorInfo;
+    //       dbData.medications = result.medications;
+    //       dbData.diagnosis   = result.diagnosis;
+    //       dbData.symptoms   = result.symptoms;
+    //       dbData.followUpDate   = result.followUpDate;
+    //     }
 
-  //     if (result.documentType === "lab_test") {
-  //       dbData.labInfo        = result.labInfo;
-  //       // dbData.tests          = result.tests;
-  //       dbData.tests          = (result.tests || []).map(test => ({
-  //         ...test,
-  //         status: sanitizeTestStatus(test.status),   // ← sanitized
-  //       }));
-  //       dbData.summary        = result.summary;
-  //       dbData.criticalValues = result.criticalValues;
-  //     }
+    //     if (result.documentType === "lab_test") {
+    //       dbData.labInfo        = result.labInfo;
+    //       // dbData.tests          = result.tests;
+    //       dbData.tests          = (result.tests || []).map(test => ({
+    //         ...test,
+    //         status: sanitizeTestStatus(test.status),   // ← sanitized
+    //       }));
+    //       dbData.summary        = result.summary;
+    //       dbData.criticalValues = result.criticalValues;
+    //     }
 
-  //     if (result.documentType === "radiology") {
-  //       dbData.studyInfo       = result.studyInfo;
-  //       dbData.findings        = result.findings;
-  //       dbData.impression      = result.impression;
-  //       dbData.recommendations = result.recommendations;
-  //     }
+    //     if (result.documentType === "radiology") {
+    //       dbData.studyInfo       = result.studyInfo;
+    //       dbData.findings        = result.findings;
+    //       dbData.impression      = result.impression;
+    //       dbData.recommendations = result.recommendations;
+    //     }
 
-  //     return Prescription.create(dbData);
-  //   })
-  // );
+    //     return Prescription.create(dbData);
+    //   })
+    // );
 
-  const savedRecords = await Promise.all(
-  allScanResults.map(async (scanResult, index) => {
-    const result = scanResult.result; // This is the JSON object returned by Gemini
+    const savedRecords = await Promise.all(
+      allScanResults.map(async (scanResult, index) => {
+        const result = scanResult.result; // This is the JSON object returned by Gemini
 
-    const dbData = {
-      user:            req.user.id,
-      documentType:    result.documentType || "prescription",
-      imagePaths:      [scanResult.imagePath],
-      imagePath:       scanResult.imagePath,
-      pageCount:       1,
-      patientInfo:     result.patientInfo || null,
-      additionalNotes: Array.isArray(result.additionalNotes) ? result.additionalNotes.join(". ") : (result.additionalNotes || null),
-      confidence:      result.confidence || "high",
-      warnings:        result.warnings || [],
-      advice:          Array.isArray(result.advice) ? result.advice.join(". ") : (result.advice || null),
-      meta:            { processingTime: Date.now() - req.startTime, pageIndex: index },
-      patientParsedDate: parsePatientDateString(result.patientInfo?.date, "new-scan"),
-    };
+        const dbData = {
+          user: req.user.id,
+          documentType: result.documentType || "prescription",
+          imagePaths: [scanResult.imagePath],
+          imagePath: scanResult.imagePath,
+          pageCount: 1,
+          patientInfo: result.patientInfo || null,
+          additionalNotes: Array.isArray(result.additionalNotes)
+            ? result.additionalNotes.join(". ")
+            : result.additionalNotes || null,
+          confidence: result.confidence || "high",
+          warnings: result.warnings || [],
+          advice: Array.isArray(result.advice)
+            ? result.advice.join(". ")
+            : result.advice || null,
+          meta: {
+            processingTime: Date.now() - req.startTime,
+            pageIndex: index,
+          },
+          patientParsedDate: parsePatientDateString(
+            result.patientInfo?.date,
+            "new-scan",
+          ),
+        };
 
-    // ── CRITICAL FIX HERE ──────────────────────────────────────────
-    // We explicitly map the AI's response to your database fields
-    if (result.documentType === "prescription" || !result.documentType) {
-      dbData.doctorInfo  = result.doctorInfo || null;
-      dbData.medications = result.medications || []; // Makes sure medications array is preserved!
-      dbData.diagnosis   = result.diagnosis || null;
-      dbData.symptoms    = result.symptoms || [];
-      dbData.followUpDate = result.followUpDate || null;
-    }
-
-    if (result.documentType === "lab_test") {
-      dbData.labInfo        = result.labInfo || null;
-      dbData.tests          = (result.tests || []).map(test => ({
-        ...test,
-        status: sanitizeTestStatus(test.status),
-      }));
-      dbData.summary        = result.summary || null;
-      // dbData.criticalValues = result.criticalValues || [];
-      dbData.criticalValues = (result.criticalValues || []).map(v => {
-        if (typeof v === "string") return v;
-        if (typeof v === "object") {
-          // Gemini returned an object like {testName, value, unit, status}
-          return `${v.testName || "Unknown"}: ${v.value || ""} ${v.unit || ""} (${v.status || ""})`.trim();
+        // ── CRITICAL FIX HERE ──────────────────────────────────────────
+        // We explicitly map the AI's response to your database fields
+        if (result.documentType === "prescription" || !result.documentType) {
+          dbData.doctorInfo = result.doctorInfo || null;
+          dbData.medications = result.medications || []; // Makes sure medications array is preserved!
+          dbData.diagnosis = result.diagnosis || null;
+          dbData.symptoms = result.symptoms || [];
+          dbData.followUpDate = result.followUpDate || null;
         }
-        return String(v);
-      });
-    }
 
-    if (result.documentType === "radiology") {
-      dbData.studyInfo       = result.studyInfo || null;
-      dbData.findings        = result.findings || null;
-      dbData.impression      = result.impression || null;
-      dbData.recommendations = result.recommendations || null;
-    }
+        if (result.documentType === "lab_test") {
+          dbData.labInfo = result.labInfo || null;
+          dbData.tests = (result.tests || []).map((test) => ({
+            ...test,
+            status: sanitizeTestStatus(test.status),
+          }));
+          dbData.summary = result.summary || null;
+          // dbData.criticalValues = result.criticalValues || [];
+          dbData.criticalValues = (result.criticalValues || []).map((v) => {
+            if (typeof v === "string") return v;
+            if (typeof v === "object") {
+              // Gemini returned an object like {testName, value, unit, status}
+              return `${v.testName || "Unknown"}: ${v.value || ""} ${v.unit || ""} (${v.status || ""})`.trim();
+            }
+            return String(v);
+          });
+        }
 
-    return Prescription.create(dbData);
-  })
-);
+        if (result.documentType === "radiology") {
+          dbData.studyInfo = result.studyInfo || null;
+          dbData.findings = result.findings || null;
+          dbData.impression = result.impression || null;
+          dbData.recommendations = result.recommendations || null;
+        }
+
+        return Prescription.create(dbData);
+      }),
+    );
     res.json({
       success: true,
       data: merged,
       pageCount: allScanResults.length,
       meta: { processingTime: Date.now() - req.startTime },
-      savedIds:  savedRecords.map(r => r._id), 
-       pageResults: allScanResults.map(s => s.result),
+      savedIds: savedRecords.map((r) => r._id),
+      pageResults: allScanResults.map((s) => s.result),
       // savedId: prescription._id
     });
   } catch (err) {
@@ -1917,7 +2142,7 @@ app.patch("/api/prescription/:id/archive", authMiddleware, async (req, res) => {
     const record = await Prescription.findOneAndUpdate(
       { _id: req.params.id, user: req.user.id },
       { archived: archive, archivedAt: archive ? new Date() : null },
-      { new: true }
+      { new: true },
     );
     if (!record) return res.status(404).json({ error: "Not found" });
     res.json({ success: true, data: record });
@@ -1925,8 +2150,6 @@ app.patch("/api/prescription/:id/archive", authMiddleware, async (req, res) => {
     res.status(500).json({ error: "Failed to update" });
   }
 });
-
-
 
 // Health check
 app.get("/health", (req, res) => res.json({ status: "ok", version: "1.0.0" }));

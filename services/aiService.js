@@ -54,6 +54,8 @@ If it is a PRESCRIPTION return:
     "name": "string or null",
     "age": "string or null",
     "gender": "string or null",
+    "weight":"string or null",
+    "blood_group":"string or null",
     "date": "ISO-8601 date string"
   },
   "doctorInfo": {
