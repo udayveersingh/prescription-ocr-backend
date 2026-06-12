@@ -136,7 +136,7 @@ async function analyzeWithGemini(imageBuffer, mimeType, prompt) {
     contents: [prompt, imagePart],
     config: {
       temperature: 0.1,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 10000,  // --token
       responseMimeType: "application/json",
       systemInstruction: "You are a medical document analyzer. You MUST respond with ONLY a single valid JSON object matching the requested schema. No explanations, no markdown block wrappers.",
     }

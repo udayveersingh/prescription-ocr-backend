@@ -1265,8 +1265,8 @@ app.get(
       const familyMemberId = req.query.familyMemberId || null;
       if (familyMemberId) query.familyMember = familyMemberId;
 
-      const records = await Prescription.find(query).sort({ createdAt: -1 });
-
+      
+      const records = await Prescription.find(query).sort({ patientParsedDate : -1});
       const memberData = await FamilyMember.findOne({
         _id: familyMemberId,
         user: req.user.id,
@@ -1316,7 +1316,7 @@ app.get(
               title: firstMed
                 ? `${firstMed.name}${firstMed.frequency ? " — " + firstMed.frequency : ""}`
                 : "Prescription",
-              subtitle: `${r.patientInfo?.date ? formatDate(r.patientInfo.date) : formatDate(r.createdAt)} · ${r.doctorInfo?.name || ""}`,
+              subtitle: `${r.patientParsedDate?formatDate(r.patientParsedDate):""} - ${r.doctorInfo?.name || ""}`,
               tag: r.followUpDate
                 ? `Refill ${formatDate(r.followUpDate)}`
                 : null,
@@ -1334,7 +1334,7 @@ app.get(
               type: "lab_test",
               icon: "flask",
               title: firstTest?.testName || r.labInfo?.labName || "Lab Report",
-              subtitle: `${formatDate(r.createdAt)} · ${r.labInfo?.labName || ""}`,
+              subtitle: `${r.patientParsedDate?formatDate(r.patientParsedDate):""} - ${r.doctorInfo?.name || ""}`,
               tag: critical
                 ? "Critical ⚠️"
                 : allNormal
@@ -1359,7 +1359,7 @@ app.get(
               type: "radiology",
               icon: "scan",
               title: `${r.studyInfo?.studyType || "Radiology"} — ${r.studyInfo?.bodyPart || ""}`,
-              subtitle: formatDate(r.createdAt),
+              subtitle:`${r.patientParsedDate?formatDate(r.patientParsedDate):""} - ${r.doctorInfo?.name || ""}`,
               tag: null,
               createdAt: r.createdAt,
             };
@@ -1615,6 +1615,7 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleDateString("en-IN", {
     day: "numeric",
     month: "short",
+    year:"numeric"
   });
 }
 
