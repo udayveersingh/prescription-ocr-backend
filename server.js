@@ -27,6 +27,8 @@ const FamilyMember = require("./models/FamilyMember");
 // Initialize Gemini SDK
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+const adminRoutes =require("./routes/adminRoutes") 
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -2160,6 +2162,8 @@ app.use((req, res, next) => {
   req.startTime = Date.now();
   next();
 });
+
+app.use("/api/admin",adminRoutes)
 
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
 module.exports = app;
