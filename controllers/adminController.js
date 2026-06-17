@@ -47,7 +47,7 @@ const loginAdmin = async (req, res) => {
 
 const getUsersData = async (req, res) => {
   try {
-    const users = await User.find();
+    const users = await FamilyMember.find();
     return res.status(200).json({
       success: true,
       data: users,
