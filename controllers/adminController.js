@@ -25,7 +25,7 @@ const loginAdmin = async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_ADMIN_SECRET, {
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
       expiresIn: "7d",
     });
 
@@ -47,9 +47,13 @@ const loginAdmin = async (req, res) => {
 
 const getUsersData = async (req, res) => {
   try {
+    const user = await User.find(); 
     const users = await FamilyMember.find();
+    const userFamilyMembers = users.length - user.length
     return res.status(200).json({
       success: true,
+      user,
+      FamilyMembersCount:userFamilyMembers ,
       data: users,
     });
   } catch (error) {
