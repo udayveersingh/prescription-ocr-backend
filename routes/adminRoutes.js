@@ -9,6 +9,7 @@ const {
   deleteFamilyMember,
   deleteUser,
   familyMemberData,
+  findFamilyMemberDocuments,
 } = require("../controllers/adminController");
 
 // Auth
@@ -25,5 +26,11 @@ router.patch("/update-user", adminMiddleware, updateUser);
 // Delete
 router.delete("/delete-member", adminMiddleware, deleteFamilyMember);
 router.delete("/delete-user", adminMiddleware, deleteUser);
+
+router.get(
+  "/findFamilyMemberDocuments/:userId",
+  adminMiddleware,
+  findFamilyMemberDocuments,
+);
 
 module.exports = router;

@@ -252,24 +252,63 @@ const familyMemberData = async (req, res) => {
   const { userId } = req.body;
 
   try {
+    // 1. Fetch all family members for the user
     const members = await FamilyMember.find({ user: userId }).sort({
       createdAt: 1,
     });
 
-    const withCounts = await Promise.all(
+    // 2. Map through members and fetch their full prescription documents
+    const withPrescriptions = await Promise.all(
       members.map(async (m) => {
-        const count = await Prescription.countDocuments({
+        // Changed .countDocuments to .find() to get the actual array of documents
+        const prescriptions = await Prescription.find({
           user: userId,
           familyMember: m._id,
           archived: { $ne: true },
         });
-        return { ...m.toObject(), scanCount: count };
+
+        // Append the prescriptions array to the family member object
+        return { ...m.toObject(), prescriptions: prescriptions };
       })
     );
 
-    res.json({ success: true, data: withCounts });
+    res.json({ success: true, data: withPrescriptions });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+};  
+
+
+const findFamilyMemberDocuments = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // 1. Find all family members linked to this user
+    const familyMembers = await FamilyMember.find({ user: userId });
+
+    // 2. Find all prescriptions for this user in one query (efficient)
+    const allPrescriptions = await Prescription.find({ user: userId });
+
+    // 3. Map through family members and attach their specific prescriptions
+    // (Assuming your Prescription schema has a 'familyMember' field)
+    const familyMembersWithDocs = familyMembers.map((member) => {
+      const memberPrescriptions = allPrescriptions.filter(
+        (prescription) => prescription.familyMember?.toString() === member._id.toString()
+      );
+
+      return {
+        ...member.toObject(),
+        prescriptions: memberPrescriptions,
+      };
+    });
+    
+    console.log("Family members with their documents:", familyMembersWithDocs);
+    // 4. Send the properly structured data back to the client
+    return res.status(200).json(familyMembersWithDocs);
+
+  } catch (error) {
+    console.error("Error fetching family member documents:", error);
+    return res.status(500).json({ message: "Internal server error", error: error.message });
   }
 };
 
@@ -281,4 +320,5 @@ module.exports = {
   deleteFamilyMember,
   deleteUser,
   familyMemberData,
+  findFamilyMemberDocuments
 };
