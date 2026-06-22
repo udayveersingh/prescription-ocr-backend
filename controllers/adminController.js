@@ -47,13 +47,13 @@ const loginAdmin = async (req, res) => {
 
 const getUsersData = async (req, res) => {
   try {
-    const user = await User.find(); 
+    const user = await User.find();
     const users = await FamilyMember.find();
-    const userFamilyMembers = users.length - user.length
+    const userFamilyMembers = users.length - user.length;
     return res.status(200).json({
       success: true,
       user,
-      FamilyMembersCount:userFamilyMembers ,
+      FamilyMembersCount: userFamilyMembers,
       data: users,
     });
   } catch (error) {
@@ -95,7 +95,8 @@ const getDocumentsData = async (req, res) => {
 
 // Updated: Handles both User (self) and FamilyMember updates
 const updateUser = async (req, res) => {
-  const { userId, name, email, age, gender, weight, blood_group, isSelf } = req.body;
+  const { userId, name, email, age, gender, weight, blood_group, isSelf } =
+    req.body;
 
   try {
     // If updating self (FamilyMember with relation="Self")
@@ -125,7 +126,7 @@ const updateUser = async (req, res) => {
       const updatedUser = await User.findByIdAndUpdate(
         userID,
         { name, email },
-        { new: true }
+        { new: true },
       );
 
       if (!updatedUser) {
@@ -139,7 +140,7 @@ const updateUser = async (req, res) => {
       const updatedFamilyMember = await FamilyMember.findByIdAndUpdate(
         userId,
         { name, age, gender, weight, blood_group },
-        { new: true }
+        { new: true },
       );
 
       return res.status(200).json({
@@ -153,7 +154,7 @@ const updateUser = async (req, res) => {
     const updatedMember = await FamilyMember.findByIdAndUpdate(
       userId,
       { name, age, gender, weight, blood_group },
-      { new: true }
+      { new: true },
     );
 
     if (!updatedMember) {
@@ -177,11 +178,9 @@ const updateUser = async (req, res) => {
   }
 };
 
-
-
 // New: Delete family member
 const deleteFamilyMember = async (req, res) => {
-  console.log("i am getting the req in the deleteFamilyMember function")
+  console.log("i am getting the req in the deleteFamilyMember function");
   const { memberId } = req.body;
 
   try {
@@ -213,7 +212,7 @@ const deleteFamilyMember = async (req, res) => {
 
 // New: Delete user and all associated data
 const deleteUser = async (req, res) => {
-  console.log("i am getting the req in the deleteUser function")
+  console.log("i am getting the req in the deleteUser function");
 
   const { userId } = req.body;
 
@@ -269,15 +268,14 @@ const familyMemberData = async (req, res) => {
 
         // Append the prescriptions array to the family member object
         return { ...m.toObject(), prescriptions: prescriptions };
-      })
+      }),
     );
 
     res.json({ success: true, data: withPrescriptions });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
-};  
-
+};
 
 const findFamilyMemberDocuments = async (req, res) => {
   try {
@@ -293,7 +291,8 @@ const findFamilyMemberDocuments = async (req, res) => {
     // (Assuming your Prescription schema has a 'familyMember' field)
     const familyMembersWithDocs = familyMembers.map((member) => {
       const memberPrescriptions = allPrescriptions.filter(
-        (prescription) => prescription.familyMember?.toString() === member._id.toString()
+        (prescription) =>
+          prescription.familyMember?.toString() === member._id.toString(),
       );
 
       return {
@@ -301,14 +300,100 @@ const findFamilyMemberDocuments = async (req, res) => {
         prescriptions: memberPrescriptions,
       };
     });
-    
+
     console.log("Family members with their documents:", familyMembersWithDocs);
     // 4. Send the properly structured data back to the client
     return res.status(200).json(familyMembersWithDocs);
-
   } catch (error) {
     console.error("Error fetching family member documents:", error);
-    return res.status(500).json({ message: "Internal server error", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Internal server error", error: error.message });
+  }
+};
+
+const getDocumetStream = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+
+    const limit = parseInt(req.query.limit) || 25;
+
+    const skip = (page - 1) * limit;
+
+    // 4. Run queries in parallel (faster)
+    const [documents, total] = await Promise.all([
+      Prescription.find()
+        .sort({ createdAt: -1 }) // important for consistent pagination
+        .skip(skip)
+        .limit(limit),
+
+      Prescription.countDocuments(),
+    ]);
+
+    // 5. Calculate total pages
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      success: true,
+      data: documents,
+
+      // useful pagination metadata
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalDocuments: total,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+const getUserStream = async (req, res) => {
+  try {
+    const { page = 1, limit = 5 } = req.query;
+
+    const skip = (page - 1) * limit;
+
+    const [users, totalUsers] = await Promise.all([
+      User.find().skip(skip).limit(Number(limit)).sort({
+      createdAt: -1,
+    }),
+      User.countDocuments(),
+    ]);
+
+    const userIds = users.map((u) => u._id);
+
+    const familyMembers = await FamilyMember.find({
+      user: { $in: userIds },
+    });
+
+    
+
+    return res.status(200).json({
+      success: true,
+
+      // pagination meta
+      totalUsers,
+      currentPage: Number(page),
+      totalPages: Math.ceil(totalUsers / limit),
+
+      // data
+      user:users,
+      FamilyMembersCount:familyMembers.length - users.length,
+      data : familyMembers,
+    });
+  } catch (error) {
+    console.log("error in getUserStream:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
@@ -320,5 +405,7 @@ module.exports = {
   deleteFamilyMember,
   deleteUser,
   familyMemberData,
-  findFamilyMemberDocuments
+  findFamilyMemberDocuments,
+  getDocumetStream,
+  getUserStream,
 };

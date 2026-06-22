@@ -10,6 +10,8 @@ const {
   deleteUser,
   familyMemberData,
   findFamilyMemberDocuments,
+  getDocumetStream,
+  getUserStream,
 } = require("../controllers/adminController");
 
 // Auth
@@ -27,10 +29,11 @@ router.patch("/update-user", adminMiddleware, updateUser);
 router.delete("/delete-member", adminMiddleware, deleteFamilyMember);
 router.delete("/delete-user", adminMiddleware, deleteUser);
 
-router.get(
-  "/findFamilyMemberDocuments/:userId",
-  adminMiddleware,
-  findFamilyMemberDocuments,
+router.get("/findFamilyMemberDocuments/:userId",adminMiddleware, findFamilyMemberDocuments,
 );
+
+router.get("/documentStream",adminMiddleware,getDocumetStream)
+
+router.get("/userStream",getUserStream)
 
 module.exports = router;

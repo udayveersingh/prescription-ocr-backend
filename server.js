@@ -51,6 +51,9 @@ app.use(express.json({ limit: "10mb" }));
 
 connectDB();
 
+
+
+
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -62,7 +65,7 @@ app.set("trust proxy", 1);
 // Rate limiting - important for free AI APIs
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 60,
+  max: 600,
   message: { error: "Too many requests, please try again later." },
 });
 app.use("/api/", limiter);
