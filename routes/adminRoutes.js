@@ -34,6 +34,6 @@ router.get("/findFamilyMemberDocuments/:userId",adminMiddleware, findFamilyMembe
 
 router.get("/documentStream",adminMiddleware,getDocumetStream)
 
-router.get("/userStream",getUserStream)
+router.get("/userStream",adminMiddleware,getUserStream)
 
 module.exports = router;
